@@ -20,8 +20,6 @@ If your Galaxy Flex notifications suddenly stopped working, this project provide
 -   **Robust Protocol Handling:** Correctly parses the multi-message protocol used by Galaxy Flex panels.
 -   **Broad SIA Level Support:** The flexible parser can correctly handle event data from SIA Levels 0, 1, 2, and 3.
 -   **Optional Heartbeat Server:** Includes an optional server to handle the proprietary Honeywell "IP Check" heartbeat.
--   **Connection Security Policies:** Per-account `ENABLED` policy (`Yes`/`No`/`Secure`) and a configurable `REJECT_POLICY` (`respond`/`drop`) to control how invalid connections are handled.
--   **Protocol State Machine:** Enforces correct SIA message ordering. Any connection that does not start with a valid `ACCOUNT_ID` is immediately rejected or silently dropped.
 -   **Character Encoding Fixes:** Decodes the proprietary character set used by Galaxy panels (e.g., Å, Ä, Ö).
 -   **Highly Configurable:** Most user settings are in a simple `sia-server.conf` file, with advanced protocol constants located in the `galaxy/` directory.
 
@@ -129,20 +127,12 @@ The primary configuration is done in `sia-server.conf`. This file is designed to
 
 -   **Site Sections (`[012345]`):** Each site is defined by a section where the header is the panel's unique **Account Number**.
     -   `SITE_NAME`: A friendly name for the site (e.g., "Main House"). If omitted, the account number is used.
-    -   `ENABLED`: Controls the connection policy for this account. Accepts `Yes`, `No`, or `Secure`.
-        -   `Yes` — Accept both plaintext and encrypted connections (default).
-        -   `No` — Reject all connections from this account.
-        -   `Secure` — Only accept encrypted connections. Plaintext connections will be rejected. You will need to supply `galaxy/encryption.py` to enable encryption.
     -   `NTFY_ENABLED`, `NTFY_TOPIC`, `NTFY_TITLE`: Configure notification delivery for this site.
     -   `NTFY_AUTH`: Set to `None`, `Token`, or `Userpass` for private topics and provide the corresponding `NTFY_TOKEN` or `NTFY_USER`/`NTFY_PASS` keys.
+
 -   **`[Default]` Section:** A special section for events from account numbers not specifically listed.
--   **`[SIA-Server]` Section:** Configure the ports and addresses for the main server.
-    -   `REJECT_POLICY`: Controls how invalid or unauthorised connections are handled. Accepts `respond` or `drop`.
-        -   `respond` — Send a SIA REJECT frame to the client (default).
-        -   `drop` — Silently close the connection without sending anything.
--   **`[IP-Check]` Section:** Configure the ports and addresses for the optional heartbeat server.
-    > **Note:** The IP Check server validates all incoming heartbeat packets before responding.
-    > It verifies the packet length, and header. Invalid packets are dropped.
+
+-   **`[SIA-Server]` & `[IP-Check]` Sections:** Configure the ports and addresses for the main server and the optional heartbeat server.
 
 -   **`[Logging]` Section:** Control the log level and output destination.
     -   `LOG_LEVEL`: Set the verbosity of logs (`DEBUG`, `INFO`, `WARNING`, `ERROR`). `INFO` is recommended for normal use.
@@ -187,12 +177,6 @@ python3 sia-server.py
 ```
 Press `Ctrl+C` to stop.
 
-#### Custom Configuration File Path
-By default, the server looks for `sia-server.conf` in the current directory.
-You can specify a different path using the `--config` argument:
-
-    python3 sia-server.py --config /path/to/your/sia-server.conf
-
 #### As a Service (Recommended)
 > **Note:** Set `LOG_TO = File` in `sia-server.conf` to keep a persistent log.
 1.  **Create the Service File:** `sudo nano /etc/systemd/system/sia-server.service`
@@ -236,12 +220,6 @@ python sia-server.py
 > **Note:** If your network setting is set to public, instead of private, you may need to add a rule windows firewall to accept inbound connections on the port (i.e. 10000) you are using. Search online how to do this for your windows version.
 
 Press `Ctrl+C` to stop.
-
-#### Custom Configuration File Path
-By default, the server looks for `sia-server.conf` in the current directory.
-You can specify a different path using the `--config` argument:
-
-    python sia-server.py --config C:\path\to\your\sia-server.conf
 
 #### As a Service (Recommended)
 > **Note:** Set `LOG_TO = File` in `sia-server.conf` to keep a persistent log.
