@@ -262,4 +262,3 @@ def enqueue_notification(event: GalaxyEvent, queue: Queue):
         log.debug("Event for account %s added to notification queue.", event.account)
     except QueueFull:
         log.error("Notification queue is still full! Event for %s was lost.", event.account)
-
