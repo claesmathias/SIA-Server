@@ -7,24 +7,33 @@ ping. It echoes the received data back to the panel and closes the connection.
 This script is intended to be run as a subprocess by sia-server.py.
 """
 
+import argparse
 import asyncio
 import logging
 import sys
 
 # --- SCRIPT INITIALIZATION ---
+parser = argparse.ArgumentParser(description='Galaxy IP Check Server')
+parser.add_argument(
+    '--config',
+    default='sia-server.conf',
+    help='Path to configuration file (default: sia-server.conf)'
+)
+args = parser.parse_args()
 
-# 1. Import the new configuration loader FIRST.
-from configuration import load_and_validate_config
+# 1. Import the new configuration loader
+from configuration import load_logging_config, load_full_config
 
 # 2. Load and validate all configuration from files.
 # This single 'config' object holds all settings.
-config = load_and_validate_config()
+logging_config = load_logging_config(args.config)
+config = load_full_config(args.config)
 
 # --- Smart Logging Setup for Subprocess ---
 # This logger is intentionally simple. It prefixes messages with the log level
 # so the parent process (sia-server.py) can parse it and apply full formatting.
 log = logging.getLogger('ip_check_server')
-log.setLevel(getattr(logging, config.LOG_LEVEL, 'INFO'))
+log.setLevel(getattr(logging, logging_config.LOG_LEVEL, 'INFO'))
 formatter = logging.Formatter('%(levelname)s:%(message)s')
 handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(formatter)
@@ -40,18 +49,47 @@ except ImportError:
 # We don't need COMMAND_BYTES anymore since we are just echoing data.
 
 # --- END INITIALIZATION ---
+def validate_ip_check_packet(data: bytes) -> bool:
+    """
+    Validates an incoming IP Check packet.
+    Returns True if the packet is valid, False otherwise.
+    
+    Validation checks:
+    1. Length must be exactly 26 bytes
+    2. First byte (header) must be 0x00
+    3. Interleaved XOR checksum must be valid
+    """
+    # Check 1: Length
+    if len(data) != 26:
+        log.debug("IP Check: Invalid length %d (expected 26)", len(data))
+        return False
+    
+    # Check 2: Header byte
+    if data[0] != 0x00:
+        log.debug("IP Check: Invalid header byte 0x%02x (expected 0x00)", data[0])
+        return False
+    
+    # Check 3: checksum
 
+    # Algo unknown...
+    
+    return True
+    
 async def handle_ip_check(reader, writer):
     """Handles an incoming IP Check connection by echoing the received data."""
     addr = writer.get_extra_info('peername')
-    
     try:
         data = await reader.read(1024)
         if not data:
             return
 
-        log.info("Received %d-byte ping from %s. Echoing response.", len(data), addr[0])
         log.debug("Ping HEX: %s", data.hex())
+        # Validate the packet before responding
+        if not validate_ip_check_packet(data):
+            log.warning("Invalid IP Check packet from %s - ignored.", addr[0])
+            return  # Silent drop
+            
+        log.info("Received %d-byte ping from %s. Echoing response.", len(data), addr[0])
         
         # Echo the exact same data back to the panel.
         writer.write(data)
@@ -60,16 +98,20 @@ async def handle_ip_check(reader, writer):
         # Wait for the panel to close the connection.
         # Note: The panel closes the connection after 15s:
         await reader.read(-1)
-        log.info("Panel at %r has closed the connection.", addr)
+        log.debug("Panel at %r has closed the connection.", addr)
 
     except asyncio.IncompleteReadError:
-        log.info("Panel at %r has closed the connection (IncompleteReadError).", addr)
+        log.debug("Panel at %r has closed the connection (IncompleteReadError).", addr)
+    except (ConnectionResetError, BrokenPipeError):
+        log.debug("Client disconnected abruptly (%r)", addr)    
     except Exception as e:
         log.error("Error in IP Check handler for %s: %s", addr[0], e)
     finally:
         writer.close()
         try:
             await writer.wait_closed()
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            pass  # Client already closed the connection
         except Exception:
             pass
 
