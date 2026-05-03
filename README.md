@@ -130,7 +130,7 @@ The primary configuration is done in `sia-server.conf`. This file is designed to
 -   **Site Sections (`[012345]`):** Each site is defined by a section where the header is the panel's unique **Account Number**.
     -   `SITE_NAME`: A friendly name for the site (e.g., "Main House"). If omitted, the account number is used.
     -   `ENABLED`: Controls the connection policy for this account. Accepts `Yes`, `No`, or `Secure`.
-        -   `Yes` — Accept both plaintext and encrypted connections (default).
+        -   `Yes` — Accept all connections to this account (default).
         -   `No` — Reject all connections from this account.
         -   `Secure` — Only accept encrypted connections. Plaintext connections will be rejected. You will need to supply `galaxy/encryption.py` to enable encryption.
     -   `NTFY_ENABLED`, `NTFY_TOPIC`, `NTFY_TITLE`: Configure notification delivery for this site.
