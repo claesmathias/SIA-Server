@@ -36,24 +36,30 @@ class GalaxyEvent:
     # Parsed from ASCII Payload
     action_text: Optional[str] = None
 
-def decode_unknown_text(data: bytes, char_map: Dict[str, str]) -> str:
+def decode_unknown_text(data: bytes, char_map: dict) -> str:
     """
-    Decodes text from ASCII blocks using a custom character map.
-    This handles the proprietary character encoding used by the Galaxy panel.
+    Decodes panel text using CP437 with overrides for characters that differ
+    from standard CP437 on this panel.
+    char_map keys are raw byte values (int), values are Unicode replacements.
     """
     try:
-        # 1. Decode the raw bytes into a string using a "safe" single-byte encoding.
-        # This correctly preserves all the proprietary characters like \x8e as single characters.
-        text = data.decode('iso-8859-1')
+        # Build a string-to-string replacement map by decoding each key byte through CP437
+        str_map = {
+            bytes([k]).decode("cp437"): v
+            for k, v in char_map.items()
+        }
+        # Decode the full data using CP437
+        text = data.decode("cp437", errors="replace")
+
+        # Replace CP437 results with correct characters
+        for cp437_char, correct_char in str_map.items():
+            text = text.replace(cp437_char, correct_char)
+
+        return text.strip()
+
     except Exception as e:
         log.warning("Could not decode text data: %s", e)
         return ""
-
-    # 2. Now, perform a simple string-to-string replacement for each known character.
-    for bad_char, good_char in char_map.items():
-        text = text.replace(bad_char, good_char)
-    
-    return text.strip()
 
 def parse_account_payload(payload: bytes, event: GalaxyEvent):
     """Parses the clean payload of an ACCOUNT_ID block."""
@@ -162,3 +168,4 @@ def parse_galaxy_event(blocks: List[Dict], account_sites: Dict,
             log.warning("Unknown command '%s' passed to parser. Payload: %r", command, payload)
             
     return event
+
