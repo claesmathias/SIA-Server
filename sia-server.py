@@ -308,7 +308,7 @@ async def handle_connection(notification_queue: Queue, reader, writer):
         if current_chunk:
             event_chunks.append(current_chunk)
         
-        log.info("Found %d distinct event(s) in this connection", len(event_chunks))
+        log.info("Found %d event(s) in connection from %r", len(event_chunks), addr)
         for i, chunk in enumerate(event_chunks, 1):
             log.debug("--- Processing Event %d of %d ---", i, len(event_chunks))
             
