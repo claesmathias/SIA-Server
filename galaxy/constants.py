@@ -234,15 +234,16 @@ EVENT_CODE_DESCRIPTIONS = {
 # CHARACTER ENCODING
 # ============================================
 
-# Unknown character mapping - Galaxy proprietary encoding
-# Used for mapping special language specific characters
-# These are confirmed from actual captures
-# You can add more as you discover them
+# The panel transmits text using an 8-bit character encoding based on the
+# IBM PC Code Page family (CP437 and variants). The specific variant may 
+# depend on the panel's configured language/region setting.
+#
+# This server decodes text using CP437 as the base and applies the overrides
+# below to correct characters that differ from standard CP437 on this panel.
+# If you see incorrectly decoded characters, identify the hex value from the
+# debug log and add an override entry here.
 UNKNOWN_CHAR_MAP = {
-    '\x8e': 'Ä',  # Confirmed in: ÅTERSTÄLL
-    '\x8f': 'Å',  # Confirmed in: PÅSLAG, SYSTEMÅT
-    '\x99': 'Ö',  # Confirmed in: FÖRDRÖJD
-    '\x86': 'å',  # Confirmed in: username test
-    '\x84': 'ä',  # Confirmed in: username test
-    '\x94': 'ö',  # Confirmed in: username test
+    0xE9: 'Ø',  # Confirmed: panel shows Ø, CP437 gives Θ
+    0xED: 'ø',  # Confirmed: panel shows ø, CP437 gives φ
 }
+
