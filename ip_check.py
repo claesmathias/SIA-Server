@@ -57,7 +57,7 @@ def validate_ip_check_packet(data: bytes) -> bool:
     Validation checks:
     1. Length must be exactly 26 bytes
     2. First byte (header) must be 0x00
-    3. Interleaved XOR checksum must be valid
+    3. Checksum - algorithm unknown, not validated
     """
     # Check 1: Length
     if len(data) != 26:
