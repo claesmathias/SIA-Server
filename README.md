@@ -9,7 +9,7 @@ This project was developed and tested on a Honeywell Galaxy Flex 20. It is likel
 If your Galaxy Flex notifications suddenly stopped working, this project provides a self-hosted alternative.
 
 > **IMPORTANT SECURITY NOTICE**
-> The communication between the alarm panel and this server is **unencrypted**. This server is designed to be run on a trusted local network only. Please read the full [Security & Privacy Guidelines](#security--privacy-guidelines) before installation.
+> By default, the communication between the alarm panel and this server is **unencrypted**. This server is designed to be run on a trusted local network only. Please read the full [Security & Privacy Guidelines](#security--privacy-guidelines) before installation.
 
 ## Features
 
@@ -111,7 +111,7 @@ Log into your Galaxy Flex panel's installer menu and configure the Ethernet modu
 -   **ARC Port:** The port for the `[SIA-Server]` and optionally the `[IP-Check]` server. (Menu `56.1.1.1.4.1`)
 -   **Protocol:** SIA. Levels 0-3 are supported; Level 3 is recommended for the most detail. (Menu `56.1.1.1.4.2`)
 -   **Account Number:** Your 4 or 6-digit alarm account number. SIA Level 3 requires 6 digits. (Menu `56.1.2.1.1`)
--   **Encryption:** Must be set to **Off**. The proprietary encryption is not supported. (Menu `56.3.3.5`)
+-   **Encryption:** Set to **Off** unless you have `galaxy/encryption.py` installed. (Menu `56.3.3.5`)
 -   **IP-Check:** (Optional) To use the heartbeat feature, enable it by setting a time interval (e.g., 00:30 for 30 minutes). `00:00` means disabled. (Menu `56.3.3.7.1`)
 -   **Eng. Test:** Use this to send a test notification without generating a fault. (Menu `56.7.1`)
 
