@@ -127,20 +127,25 @@ Our analysis shows this is a proprietary binary protocol, completely distinct fr
 
 #### The "Ping" Packet (Panel to Server)
 
-When an IP Check is performed, the panel sends a single, fixed-length **26-byte** TCP packet. This packet has a well-defined structure.
+When an IP Check is performed, the panel sends a single, fixed-length **26-byte** TCP packet. This packet has a well-defined structure, reverse-engineered from captured network traffic.
 
 **Structure of the 26-byte IP Check Packet:**
 
-| Byte Index(es) | Length | Example Hex               | Description                                     |
-| :------------- | :----- | :------------------------ | :---------------------------------------------- |
-| **0**          | 1 byte | `00`                      | **Header:** A static byte, likely identifying this as an IP Check ping. |
-| **1-8**        | 8 bytes| `30 30 30 32 37 39 37 38` | **Account Number:** The panel's account number, ASCII encoded and padded with leading zeros. |
-| **9-14**       | 6 bytes| `11 0c 00 fd 09 00`       | **Static ID Block 1:** An unknown but static block of identifier data. |
-| **15**         | 1 byte | *(dynamic)*               | **Nonce:** A pseudo-random byte that changes with each ping to ensure message uniqueness. |
-| **16**         | 1 byte | *(dynamic)*               | **Sequence Counter:** A byte that increments over time, likely to prevent replay attacks. |
-| **17-21**      | 5 bytes| `8d 69 3c 78 00`          | **Static ID Block 2:** Another unknown but static block of data. |
-| **22-23**      | 2 bytes| `00 00`                   | **Padding:** Static null bytes for alignment. |
-| **24-25**      | 2 bytes| *(dynamic)*               | **Checksum:** Presumed checksum. Algo unknown. |
+| Byte Index(es) | Length  | Example Hex              | Description |
+| :------------- | :------ | :------------------------| :---------- |
+| **0**          | 1 byte  | `00`                     | **Header:** Always `0x00`. Identifies this as an IP Check ping. |
+| **1-8**        | 8 bytes | `30 30 30 32 37 39 37 38` | **Account Number:** The panel's account number, ASCII encoded and zero-padded to 8 characters. |
+| **9-14**       | 6 bytes | `11 0c 00 fd 09 00`       | **Static ID Block:** Never changes across any capture. Likely a hardware or firmware identifier. |
+| **15-18**      | 4 bytes | `e8 80 f1 69`             | **Timestamp:** A 32-bit little-endian Unix timestamp (seconds since 1970-01-01 00:00:00). Reflects the panel's configured local time, which may differ from the host system's timezone. |
+| **19**         | 1 byte  | `3c`                      | **Unknown:** Always observed as `0x3c` (=60). Purpose unknown. Possibly a separator, clock resolution indicator, or part of an extended field. |
+| **20-23**      | 4 bytes | `78 00 00 00`             | **IP Check Interval:** A 32-bit little-endian value representing the configured IP Check interval in seconds. Maximum value is 359,940 seconds (99h 59min). |
+| **24-25**      | 2 bytes | *(dynamic)*               | **Unknown:** Changes with each ping. Not a standard CRC (exhaustive brute-force search found no matching algorithm). Likely related to the timestamp but the exact algorithm is unknown. |
+
+**Notes on the timestamp (bytes 15-18):**
+- The panel does not appear to have an explicit timezone setting in its user interface.
+- The stored timestamp may reflect the panel's RTC time as configured, which may not be synchronized to UTC or the local timezone.
+- The country/region defaults selected during initial panel setup may influence this behaviour.
+- Relative differences between consecutive pings are always exact (proven by matching to the configured interval to the second), confirming the seconds-based counter interpretation.
 
 #### The "Pong" Response (Server to Panel)
 
