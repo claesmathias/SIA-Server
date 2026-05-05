@@ -46,9 +46,20 @@ try:
 except ImportError:
     pass # uvloop is optional
 
-# We don't need COMMAND_BYTES anymore since we are just echoing data.
-
+# --- Optional Encryption Support ---
+ENCRYPTION_AVAILABLE = False
+START_ENC_HEADER = b'\x05\x01'
+CryptoContext = None
+do_handshake = None
+try:
+    from galaxy.encryption import do_handshake, CryptoContext, START_ENC_HEADER
+    ENCRYPTION_AVAILABLE = True
+    log.debug("Encryption modules loaded.")
+except (ImportError, ModuleNotFoundError):
+    pass
+    
 # --- END INITIALIZATION ---
+
 def validate_ip_check_packet(data: bytes) -> bool:
     """
     Validates an incoming IP Check packet.
@@ -74,25 +85,69 @@ def validate_ip_check_packet(data: bytes) -> bool:
     # Algo unknown...
     
     return True
+
+def extract_account(data: bytes) -> str:
+    """Extract account number from IP Check packet bytes 1-8."""
+    return data[1:9].decode('ascii', errors='ignore').lstrip('0')
     
 async def handle_ip_check(reader, writer):
     """Handles an incoming IP Check connection by echoing the received data."""
     addr = writer.get_extra_info('peername')
+    crypto = None
+    
     try:
         data = await reader.read(1024)
         if not data:
             return
 
+        # --- Encryption detection ---
+        if data.startswith(START_ENC_HEADER):
+            if ENCRYPTION_AVAILABLE:
+                log.debug("Encrypted IP Check session detected from %s", addr[0])
+                crypto = await do_handshake(reader, writer, data, log)
+                if crypto is None:
+                    log.warning("IP Check handshake failed from %s - ignored.", addr[0])
+                    return
+                # Read the actual ping after handshake
+                data = await reader.read(1024)
+                if not data:
+                    return
+            else:
+                log.warning("Encrypted session requested from %s but encryption not available - ignored.", addr[0])
+                return
+
+        # Decrypt if encrypted session
+        if crypto:
+            data = crypto.decrypt(data)
+            
         log.debug("Ping HEX: %s", data.hex())
         # Validate the packet before responding
         if not validate_ip_check_packet(data):
             log.warning("Invalid IP Check packet from %s - ignored.", addr[0])
             return  # Silent drop
-            
+
+        # --- ACCOUNT POLICY ENFORCEMENT ---
+        account_number = extract_account(data)
+        policy = config.ACCOUNT_POLICIES.get(
+            account_number,
+            config.ACCOUNT_POLICIES.get('default', 'yes')
+        )
+        is_encrypted = crypto is not None
+
+        if policy == 'no':
+            log.warning("IP Check from disabled account '%s' - ignored.", account_number)
+            return
+
+        if policy == 'secure' and not is_encrypted:
+            log.warning("IP Check from '%s' requires encrypted connection - ignored.", account_number)
+            return
+
+        log.debug("IP Check account '%s' policy satisfied.", account_number)        
         log.info("Received %d-byte ping from %s. Echoing response.", len(data), addr[0])
-        
+
+        response = crypto.encrypt(data) if crypto else data
         # Echo the exact same data back to the panel.
-        writer.write(data)
+        writer.write(response)
         await writer.drain()
 
         # Wait for the panel to close the connection.
