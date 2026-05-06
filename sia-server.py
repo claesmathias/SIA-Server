@@ -215,11 +215,13 @@ async def handle_connection(notification_queue: Queue, reader, writer):
             # --- encryption detection ---
             if data.startswith(START_ENC_HEADER):
                 if ENCRYPTION_AVAILABLE:
-                    log.info("Encrypted session detected from %r", addr)
+                    log.debug("Encrypted header detected from %r", addr)
                     crypto = await do_handshake(reader, writer, data, log)
                     if crypto is None:
-                        log.warning("Handshake failed, closing connection")
+                        if config.REJECT_POLICY == 'respond':
+                            log.warning("Handshake failed, closing connection")
                         return
+                    log.info("Encrypted session established from %r", addr)
                     # Handshake successful, now wait for the first real SIA message.
                     data = await reader.read(1024)
                     if not data:
