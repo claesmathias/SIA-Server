@@ -244,10 +244,12 @@ async def handle_connection(notification_queue: Queue, reader, writer):
             
             if command_byte is None:
                 if len(data) > 0:
-                    log.warning("Invalid frame from %r - rejected.", addr)
+                    if config.REJECT_POLICY == 'respond': #only print warning if we respond
+                        log.warning("Invalid frame from %r - rejected.", addr)
                     log.debug("Raw: %r", data)
                 else:
-                    log.warning("Invalid frame, received empty data block, from %r - rejected.", addr)
+                    if config.REJECT_POLICY == 'respond': #only print warning if we respond
+                        log.warning("Invalid frame, received empty data block, from %r - rejected.", addr)
                 await policy_reject(writer, crypto=crypto)
                 continue
             
