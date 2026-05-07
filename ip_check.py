@@ -103,12 +103,13 @@ async def handle_ip_check(reader, writer):
         # --- Encryption detection ---
         if data.startswith(START_ENC_HEADER):
             if ENCRYPTION_AVAILABLE:
-                log.debug("Encrypted IP Check session detected from %s", addr[0])
+                log.debug("Encrypted header detected from %s", addr[0])
                 crypto = await do_handshake(reader, writer, data, log)
                 if crypto is None:
-                    log.warning("IP Check handshake failed from %s - ignored.", addr[0])
+                    #log.warning("IP Check handshake failed from %s - ignored.", addr[0])
                     return
                 # Read the actual ping after handshake
+                log.info("Encrypted session established from %r", addr)
                 data = await reader.read(1024)
                 if not data:
                     return
