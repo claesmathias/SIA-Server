@@ -124,7 +124,7 @@ async def handle_ip_check(reader, writer):
         log.debug("Ping HEX: %s", data.hex())
         # Validate the packet before responding
         if not validate_ip_check_packet(data):
-            log.warning("Invalid IP Check packet from %s - ignored.", addr[0])
+            log.debug("Invalid IP Check packet from %s - ignored.", addr[0])
             return  # Silent drop
 
         # --- ACCOUNT POLICY ENFORCEMENT ---
