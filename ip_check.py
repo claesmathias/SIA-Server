@@ -143,8 +143,10 @@ async def handle_ip_check(reader, writer):
             log.warning("IP Check from '%s' requires encrypted connection - ignored.", account_number)
             return
 
-        log.debug("IP Check account '%s' policy satisfied.", account_number)        
-        log.info("Received %d-byte ping from %s. Echoing response.", len(data), addr[0])
+        log.debug("IP Check account '%s' policy satisfied.", account_number)
+        site_name = config.ACCOUNT_SITES.get(account_number, account_number)
+        log.info("Received ping from site: %s (Account: %s) from %s. Echoing response.",
+                 site_name, account_number, addr[0])
 
         response = crypto.encrypt(data) if crypto else data
         # Echo the exact same data back to the panel.
