@@ -1,6 +1,6 @@
 # Honeywell Galaxy SIA Notification Server
 
-SIA-Server is a lightweight, self-hosted Python service that receives SIA protocol messages from Honeywell Galaxy Flex alarm systems and forwards them as rich, prioritized push notifications via [ntfy.sh](https://ntfy.sh/).
+SIA-Server is a lightweight, self-hosted Python service that receives SIA protocol messages from Honeywell Galaxy Flex alarm systems and forwards them as rich, prioritized push notifications via Apprise.
 
 It was created as a replacement for the discontinued free Honeywell push notification service, allowing users to regain full control over their alarm alerts without ongoing subscription costs.
 
@@ -15,8 +15,8 @@ If your Galaxy Flex notifications suddenly stopped working, this project provide
 
 -   **Self-Hosted:** Runs on any local Windows or Linux machine, like a Raspberry Pi.
 -   **Real-time Notifications:** Instantly forwards alarm events to your devices.
--   **Prioritized Alerts:** Uses ntfy.sh priorities to distinguish between urgent alarms and routine events.
--   **Advanced Notification Routing:** Route notifications for different accounts to different ntfy.sh topics, each with its own optional authentication (Bearer Token or User/Pass).
+-   **Prioritized Alerts:** Uses Apprise priorities to distinguish between urgent alarms and routine events.
+-   **Advanced Notification Routing:** Route notifications for different accounts to different Apprise endpoints, each with its own optional authentication (Bearer Token or User/Pass).
 -   **Robust Protocol Handling:** Correctly parses the multi-message protocol used by Galaxy Flex panels.
 -   **Broad SIA Level Support:** The flexible parser can correctly handle event data from SIA Levels 0, 1, 2, and 3.
 -   **Optional Heartbeat Server:** Includes an optional server to handle the proprietary Honeywell "IP Check" heartbeat.
@@ -75,6 +75,18 @@ This means:
 - edit `sia-server.conf` on the host,
 - then restart the stack with `docker compose restart sia-server`.
 
+### Docker Compose service notes
+
+The `docker-compose.yml` file defines three services:
+
+- `sia-server`: builds the local SIA server image and reads configuration from the mounted `/config/sia-server.conf`.
+- `apprise`: provides the Apprise notification engine and stores state under `./apprise` on the host.
+- `mqtt`: runs Mosquitto for MQTT endpoints used by Apprise.
+
+The services share a Compose network, so internal hostnames like `apprise` and `mosquitto` can be used from the SIA server configuration.
+
+If you need the Apprise web UI or API exposed, add a port mapping for the `apprise` service in `docker-compose.yml` and restart the stack.
+
 ### Example APPRISE_SERVICES for Docker
 
 When using the bundled `apprise` and `mqtt` services, your SIA site configuration can reference container hostnames directly:
@@ -87,8 +99,11 @@ APPRISE_ENABLED = Yes
 APPRISE_TITLE = Galaxy Alarm
 APPRISE_SERVICES = [
     'mqtt://apprise@mosquitto:1883/apprise',
-    'ntfys://your-topic'
-]
+    'whatsapp://<token>@<from_phone>/<to_phone>',
+    'pover://<api_key>@<user_or_service_id>',
+    'ntfys://public-topic',
+    'ntfys://tk_<PRIVATE_TOKEN>@ntfy.example.com/private-topic',
+    'hassio://<long_token>@homeassistant'
 ```
 
 ## Apprise Usage
@@ -169,8 +184,8 @@ The primary configuration is done in `sia-server.conf`. This file is designed to
         -   `Yes` — Accept all connections to this account (default).
         -   `No` — Reject all connections from this account.
         -   `Secure` — Only accept encrypted connections. Plaintext connections will be rejected. You will need to supply `galaxy/encryption.py` to enable encryption.
-    -   `NTFY_ENABLED`, `NTFY_TOPIC`, `NTFY_TITLE`: Configure notification delivery for this site.
-    -   `NTFY_AUTH`: Set to `None`, `Token`, or `Userpass` for private topics and provide the corresponding `NTFY_TOKEN` or `NTFY_USER`/`NTFY_PASS` keys.
+    -   `APPRISE_ENABLED`, `APPRISE_TITLE`, `APPRISE_SERVICES`: Configure notification delivery for this site.
+    -   `APPRISE_SERVICES` accepts one or more Apprise service URLs. Use tokens or credentials inside the service URL when needed.
 -   **`[Default]` Section:** A special section for events from account numbers not specifically listed.
 -   **`[SIA-Server]` Section:** Configure the ports and addresses for the main server.
     -   `REJECT_POLICY`: Controls how invalid or unauthorised connections are handled. Accepts `respond` or `drop`.
@@ -221,14 +236,14 @@ The communication between your alarm panel and this server is **unencrypted**. R
 
 > **Warning:** Do not expose the server's listening ports directly to the public internet. If you must, use a **VPN** (e.g., WireGuard).
 
-**2. Notification Privacy (Server to ntfy.sh)**
+**2. Notification Privacy (Server to Apprise endpoints)**
 
--   **Transport Security:** Communication to `ntfy.sh` uses **HTTPS** and is secure.
--   **Topic Privacy:** ntfy.sh topics are public by default. To secure them:
-    -   **Use a long, unguessable topic name.**
-    -   **Consider a generic Site Name** that cannot be linked to your address.
-    -   Alternatively: **Subscribe to NTFY.sh PRO** to setup private channels with authentication. This server fully supports authentication via the `NTFY_AUTH` settings.
-    -   Alternatively: **Host NTFY yourself** to be able to setup private channels free of charge (Requires a machine with public ip)
+-   **Transport Security:** Apprise can send to HTTPS-backed endpoints, which is secure.
+-   **Endpoint Privacy:** Many Apprise services are public by default. To secure them:
+    -   **Use a long, unguessable topic or path.**
+    -   **Use service authentication** when supported by the destination.
+    -   **Use direct Apprise URLs** with embedded credentials or API tokens only when necessary.
+    -   Alternatively: host your own private notification endpoint and point Apprise at it.
 
 **Disclaimer:** You are ultimately responsible for securing your own setup.
 
