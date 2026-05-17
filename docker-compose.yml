@@ -1,0 +1,60 @@
+services:
+  sia-server:
+    build: .
+    image: sia-server:latest
+    container_name: sia-server
+    depends_on:
+      - apprise
+    environment:
+      - TZ=Europe/Brussels
+    ports:
+      - "10000:10000"
+      - "10001:10001"
+    volumes:
+      - $PWD/sia-server.conf:/config/sia-server.conf:ro
+    networks:
+      - sia-network
+    restart: unless-stopped
+
+  apprise:
+    image: caronc/apprise:latest
+    container_name: apprise
+    user: "${PUID:-1000}:${PGID:-1000}"
+    # Hardened runtime
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      APPRISE_STATEFUL_MODE: simple
+      APPRISE_CONFIG_LOCK: yes
+      APPRISE_ATTACH_SIZE: 0
+      APPRISE_WORKER_COUNT: "1"
+      APPRISE_ADMIN: "y"
+      TZ: Eruope/Brussels
+    # Persistent state
+    volumes:
+      - $PWD/apprise/config:/config
+      - $PWD/apprise/plugin:/plugin
+      - $PWD/apprise/attach:/attach
+    # Ephemeral runtime and temp files
+    tmpfs:
+      - /tmp
+    networks:
+      - sia-network
+    restart: unless-stopped
+
+  mqtt:
+    image: eclipse-mosquitto
+    container_name: mosquitto
+    volumes:
+      - $PWD/mosquitto/data:/mosquitto/data
+      - $PWD/mosquitto/logs:/mosquitto/logs
+    networks:
+      - sia-network
+    command: "mosquitto -c /mosquitto-no-auth.conf" #Needed for unauthenticated mqtt broker with listen address 0.0.0.0
+    restart: unless-stopped
+
+networks:
+  sia-network:

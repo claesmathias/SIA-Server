@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 Galaxy SIA Server
 Receives, validates, and parses proprietary SIA protocol messages from
-Honeywell Galaxy Flex alarm systems. It sends notifications via ntfy.sh.
+Honeywell Galaxy Flex alarm systems. It sends notifications via Apprise to supported endpoints.
 
 This server is configured via 'sia-server.conf' and 'configuration.py'.
 """
@@ -443,7 +443,7 @@ def main():
     notification_queue = Queue(maxsize=config.MAX_QUEUE_SIZE)
     dispatcher = NotificationDispatcher(
         notification_queue,
-        config.NTFY_TOPICS,
+        config.APPRISE_TOPICS,
         config.EVENT_PRIORITIES,
         config.DEFAULT_PRIORITY,
         config.MAX_RETRIES,

@@ -2,7 +2,7 @@
 Galaxy SIA Notification Handler
 
 This module is responsible for formatting and sending notifications
-to a service like ntfy.sh based on a parsed GalaxyEvent.
+via Apprise to any supported destination based on a parsed GalaxyEvent.
 """
 
 import logging
@@ -34,17 +34,17 @@ except ImportError:
     else:
         log.info("PyOpenSSL not available; using default system SSL context.")
 
-# --- CRITICAL: Check for 'requests' library ---
+# --- CRITICAL: Check for 'apprise' library ---
 try:
-    import requests
+    import apprise
 except ImportError:
     log.critical("="*60)
-    log.critical("FATAL ERROR: The 'requests' library is not installed.")
+    log.critical("FATAL ERROR: The 'apprise' library is not installed.")
     log.critical("This library is required to send notifications.")
     if sys.platform == "win32":
-        log.critical("Please install it by running: python -m pip install requests")
+        log.critical("Please install it by running: python -m pip install apprise")
     else: # Assume Linux/macOS
-        log.critical("Please install it by running: sudo apt install python3-requests")
+        log.critical("Please install it by running: python3 -m pip install apprise")
     log.critical("="*60)
     sys.exit(1) # Exit the entire application immediately.
 
@@ -84,80 +84,75 @@ def format_notification_text(event: GalaxyEvent) -> str:
     return notification.strip()
 
 
-def _dispatch_http_notification(event: GalaxyEvent, ntfy_topics: Dict, priority_map: Dict, 
-                               default_priority: int) -> bool:
-    """Sends a formatted notification using topic-specific configuration."""
-    
-    # 1. Find the correct topic configuration for this event's account.
-    topic_config = ntfy_topics.get(event.account, ntfy_topics.get('default'))
-    
-    # 2. Check if notifications are enabled for this specific topic.
+def _map_priority_to_notify_type(priority: int) -> 'apprise.NotifyType':
+    """Maps Galaxy event priority to an Apprise notification type."""
+    if priority <= 2:
+        return apprise.NotifyType.INFO
+    if priority == 3:
+        return apprise.NotifyType.SUCCESS
+    if priority == 4:
+        return apprise.NotifyType.WARNING
+    return apprise.NotifyType.FAILURE
+
+
+def _dispatch_apprise_notification(event: GalaxyEvent, apprise_topics: Dict, priority_map: Dict,
+                                  default_priority: int) -> bool:
+    """Sends a formatted notification using topic-specific Apprise configuration."""
+
+    topic_config = apprise_topics.get(event.account, apprise_topics.get('default'))
+
     if not topic_config or not topic_config.get('enabled', False):
         log.debug("Notifications disabled for account '%s' or default topic. Skipping.", event.account)
         return False
-        
-    ntfy_url = topic_config.get('url')
-    if not ntfy_url or 'your-topic-here' in ntfy_url:
-        log.warning("No valid ntfy.sh URL found for account '%s' or default. Skipping.", event.account)
-        return False
-    
-    if not event.event_code:
-        log.warning("Event has no event_code, cannot determine priority. Skipping notification.")
+
+    apprise_urls = topic_config.get('urls', [])
+    if not apprise_urls:
+        log.warning("No valid Apprise services found for account '%s' or default. Skipping.", event.account)
         return False
 
     message = format_notification_text(event)
     priority = get_event_priority(event.event_code, priority_map, default_priority)
-    
-    # 3. Get the title from the topic's specific configuration.
+
     notification_title = topic_config.get('title', 'Galaxy Alarm')
     account_display = event.site_name or event.account
     title = f"{notification_title}: {account_display}"
-    
-    headers = {
-        "Title": title,
-        "Priority": str(priority),
-    }
-    
-    auth_config = topic_config.get('auth')
-    auth_details = None
-    if auth_config:
-        log.debug("ntfy.sh authentication is configured for this topic.")
-        method = auth_config.get('method')
-        if method == 'token':
-            token = auth_config.get('token')
-            if token:
-                headers['Authorization'] = f"Bearer {token}"
-                log.debug("Using Bearer token authentication.")
-        elif method == 'userpass':
-            user = auth_config.get('user')
-            password = auth_config.get('pass')
-            if user and password:
-                auth_details = (user, password)
-                log.debug("Using username/password authentication.")
+    notify_type = _map_priority_to_notify_type(priority)
 
-    # Two separate log lines are intentional: INFO gives the clean operational message
-    # without the URL (privacy), DEBUG includes the URL for diagnostics.
-    # When logging to Syslog, level filtering is handled by syslogd, so both lines
-    # must be emitted by the logger regardless of configured level.
-    log.debug("Sending notification (priority %d) to %s: %s", priority, ntfy_url, message)
+    apprise_client = topic_config.get('apprise')
+    if apprise_client is None:
+        apprise_client = apprise.Apprise()
+        added_any = False
+        for u in apprise_urls:
+            if not u or 'your-url' in u.lower() or 'your-url-here' in u.lower():
+                log.warning("Skipping invalid Apprise URL for account %s: %s", event.account, u)
+                continue
+            if apprise_client.add(u):
+                added_any = True
+            else:
+                log.error("Failed to initialize Apprise URL for account %s: %s", event.account, u)
+
+        if not added_any:
+            log.error("No valid Apprise services available for account %s; skipping.", event.account)
+            return False
+
+        topic_config['apprise'] = apprise_client
+
+    log.debug("Sending notification (priority %d) to %s: %s", priority, ','.join(apprise_urls), message)
     log.info("Sending notification (priority %d) for account %s: %s", priority, account_display, message)
-    
+
     try:
-        response = requests.post(
-            ntfy_url,
-            data=message.encode('utf-8'),
-            headers=headers,
-            timeout=10,
-            auth=auth_details
+        success = apprise_client.notify(
+            body=message,
+            title=title,
+            notify_type=notify_type
         )
-        response.raise_for_status()
-        log.debug("Dispatch successful for account %s.", event.account)
-        return True
-            
-    except requests.exceptions.Timeout:
-        log.error("Notification failed: Request to ntfy.sh timed out.")
+        if success:
+            log.debug("Dispatch successful for account %s.", event.account)
+            return True
+        log.error("Dispatch failed for account %s: Apprise returned False.", event.account)
         return False
-    except requests.exceptions.RequestException as e:
+
+    except Exception as e:
         log.error("Dispatch failed for account %s: %s", event.account, e)
         return False
 
@@ -166,12 +161,12 @@ class NotificationDispatcher(Thread):
     A non-blocking background thread that processes a queue of notifications.
     It handles sending and retries with progressive backoff without blocking the queue.
     """
-    def __init__(self, queue: Queue, ntfy_topics: Dict, priority_map: Dict, 
+    def __init__(self, queue: Queue, apprise_topics: Dict, priority_map: Dict,
                  default_priority: int, max_retries: int, max_retry_time: int):
         super().__init__(daemon=True)
         self.name = "NotificationDispatcher"
         self.queue = queue
-        self.ntfy_topics = ntfy_topics
+        self.apprise_topics = apprise_topics
         self.priority_map = priority_map
         self.default_priority = default_priority
         self.max_retries = max_retries
@@ -214,7 +209,7 @@ class NotificationDispatcher(Thread):
                 time.sleep(1.0) 
                 continue
             
-            success = _dispatch_http_notification(event, self.ntfy_topics, self.priority_map, self.default_priority)
+            success = _dispatch_apprise_notification(event, self.apprise_topics, self.priority_map, self.default_priority)
             
             if not success:
                 # The notification failed. Schedule it for a future retry.
