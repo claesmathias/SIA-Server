@@ -26,8 +26,7 @@ services:
   # --- REQUIRED: Main SIA Event Server ---
   sia-server:
     # Build from local Dockerfile or pull from Docker Hub
-    build: .
-    image: sia-server:latest
+    image: claesmathias/sia-server:latest
     container_name: sia-server
     depends_on:
       - apprise
