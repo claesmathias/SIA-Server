@@ -15,5 +15,12 @@ EXPOSE 10000 10001
 # Allow the config file to be mounted from the host
 VOLUME ["/config"]
 
+ARG APP_VERSION=unknown
+ARG BUILD_NUMBER=local
+ARG COMMIT_SHA=dev
+ENV APP_VERSION=$APP_VERSION \
+    BUILD_NUMBER=$BUILD_NUMBER \
+    COMMIT_SHA=$COMMIT_SHA
+
 # Default command uses the mounted configuration file
 CMD ["python3", "sia-server.py", "--config", "/config/sia-server.conf"]

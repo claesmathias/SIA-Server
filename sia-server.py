@@ -10,6 +10,7 @@ This server is configured via 'sia-server.conf' and 'configuration.py'.
 # --- Application Version ---
 __version__ = "2.2.0-beta2"
 
+import os
 import argparse
 import asyncio
 import logging
@@ -434,11 +435,25 @@ def handle_shutdown(signum, frame):
     log.info("Received shutdown signal (%d), stopping server...", signum)
     sys.exit(0)
 
+def get_build_info():
+    """Return version metadata injected at image build time, with local defaults."""
+    return {
+        "version": os.getenv("APP_VERSION") or __version__,
+        "build": os.getenv("BUILD_NUMBER") or "local",
+        "commit": (os.getenv("COMMIT_SHA") or "dev")[:7],
+    }
+
 def main():
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
-    
-    log.info("Starting Galaxy SIA Server version %s", __version__)
+
+    build_info = get_build_info()
+    log.info(
+        "Starting Galaxy SIA Server version %s (build %s, commit %s)",
+        build_info["version"],
+        build_info["build"],
+        build_info["commit"],
+    )
 
     notification_queue = Queue(maxsize=config.MAX_QUEUE_SIZE)
     dispatcher = NotificationDispatcher(
