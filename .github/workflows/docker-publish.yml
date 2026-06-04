@@ -15,7 +15,11 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    
+
+    # Opt into Node.js 24 now; removes deprecation warnings from all actions
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
     # Required permissions for pushing to registry
     permissions:
       contents: read
@@ -24,7 +28,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -51,7 +55,7 @@ jobs:
 
       - name: Build and push Docker image
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
