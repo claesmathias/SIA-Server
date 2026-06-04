@@ -1,0 +1,142 @@
+# ===================================================================
+# SIA Server Docker Compose Configuration
+#
+# This file defines all services needed to run the Galaxy SIA Server
+# with notification support via Apprise and optional integrations.
+#
+# Services:
+#   - sia-server: Main SIA event server (receives panel events)
+#   - apprise: Notification delivery engine (sends alerts to multiple services)
+#   - mqtt: Message broker for event distribution (OPTIONAL - example only)
+#   - wafa: WhatsApp API for free WhatsApp notifications (OPTIONAL - example only)
+#
+# Usage:
+#   docker-compose up -d              # Start all services
+#   docker-compose logs -f sia-server # View sia-server logs
+#   docker-compose down               # Stop all services
+#
+# Configuration:
+#   - Edit sia-server.conf to configure alarm panels and notification services
+#   - Edit .env file (if needed) to override PUID/PGID/TZ environment variables
+#   - Customize apprise/config, apprise/plugin, apprise/attach directories as needed
+#
+# ===================================================================
+
+services:
+  # --- REQUIRED: Main SIA Event Server ---
+  sia-server:
+    # Build from local Dockerfile or pull from Docker Hub
+    image: claesmathias/sia-server:latest
+    container_name: sia-server
+    depends_on:
+      - apprise
+    environment:
+      # Set timezone for log timestamps
+      - TZ=Europe/Brussels
+    ports:
+      # SIA Event Server (receives panel events)
+      - "10000:10000"
+      # IP Check / Heartbeat Server
+      - "10001:10001"
+    volumes:
+      # Mount configuration file (read-only for security)
+      - $PWD/sia-server.conf:/config/sia-server.conf:ro
+    networks:
+      - sia-network
+    restart: unless-stopped
+
+  # --- REQUIRED: Apprise Notification Engine ---
+  apprise:
+    # Official Apprise image from caronc
+    image: caronc/apprise:latest
+    container_name: apprise
+    # Run with non-root user (set PUID/PGID in .env)
+    user: "${PUID:-1000}:${PGID:-1000}"
+    # Hardened security settings
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      # Enable stateful notifications (remember previous state)
+      APPRISE_STATEFUL_MODE: simple
+      # Lock configuration from web UI changes
+      APPRISE_CONFIG_LOCK: yes
+      # Disable attachment uploads
+      APPRISE_ATTACH_SIZE: 0
+      # Number of worker threads for sending notifications
+      APPRISE_WORKER_COUNT: "1"
+      # Enable admin interface at http://localhost:8000 (optional)
+      APPRISE_ADMIN: "y"
+      # Timezone for logs
+      TZ: Europe/Brussels
+    # Persistent configuration and plugins
+    volumes:
+      # Configuration files for notification services
+      - $PWD/apprise/config:/config
+      # Custom notification plugins directory
+      - $PWD/apprise/plugin:/plugin
+      # Attachments storage
+      - $PWD/apprise/attach:/attach
+    # Temporary runtime files
+    tmpfs:
+      - /tmp
+    networks:
+      - sia-network
+    restart: unless-stopped
+
+  # --- OPTIONAL: MQTT Message Broker (Example Integration) ---
+  # Uncomment to enable MQTT for event distribution.
+  # This allows sia-server to send events to other systems via MQTT.
+  #
+  # Usage:
+  #   Add to sia-server.conf APPRISE_SERVICES:
+  #   'mqtt://apprise@mosquitto:1883/apprise'
+  #
+  # mqtt:
+  #   image: eclipse-mosquitto
+  #   container_name: mosquitto
+  #   volumes:
+  #     - $PWD/mosquitto/data:/mosquitto/data
+  #     - $PWD/mosquitto/logs:/mosquitto/logs
+  #   networks:
+  #     - sia-network
+  #   command: "mosquitto -c /mosquitto-no-auth.conf" # Unauthenticated MQTT broker listening on 0.0.0.0
+  #   restart: unless-stopped
+
+  # --- OPTIONAL: WAFA WhatsApp API (Example Integration) ---
+  # Uncomment to enable free WhatsApp notifications via WAFA.
+  # Requires a dedicated WhatsApp account for sending messages.
+  #
+  # Setup:
+  #   1. Uncomment this section
+  #   2. Check WAFA logs for QR code: docker-compose logs wafa
+  #   3. Scan QR code with WhatsApp on a separate account
+  #   4. Send /chat-id to your main account or groups to get chat IDs
+  #   5. Update sia-server.conf with WAFA URLs
+  #
+  # Usage:
+  #   Add to sia-server.conf APPRISE_SERVICES:
+  #   'json://wafa:3000/?:chats=YOUR_CHAT_ID@g.us'
+  #
+  # Reference: https://github.com/juanafanador07/WAFA
+  #
+  # wafa:
+  #   build: ../WAFA
+  #   image: wafa:latest
+  #   container_name: wafa
+  #   restart: unless-stopped
+  #   volumes:
+  #     - $PWD/wafa/data:/data
+  #   networks:
+  #     - sia-network
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 3
+
+# --- Network Configuration ---
+networks:
+  sia-network:

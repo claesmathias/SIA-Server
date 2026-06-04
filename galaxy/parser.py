@@ -18,21 +18,32 @@ class GalaxyEvent:
     account_payload: Optional[bytes] = None
     data_payload: Optional[bytes] = None
     ascii_payload: Optional[bytes] = None
-    
+
     # Parsed from Account Payload
     account: Optional[str] = None
     site_name: Optional[str] = None
-    
-    # Parsed from Data Payload
-    time: Optional[str] = None
-    user_id: Optional[str] = None
-    partition: Optional[str] = None
-    group: Optional[str] = None
-    value: Optional[str] = None
+
+    # Block type — set by parse_galaxy_event from the command byte
+    is_alarm: Optional[bool] = None   # True = NEW_EVENT (0x4E), False = OLD_EVENT (0x4F)
+
+    # Parsed from event data payload (NEW_EVENT / OLD_EVENT)
+    # SIA field codes and their default value widths (4 chars unless noted)
+    date: Optional[str] = None            # da= date
+    time: Optional[str] = None            # ti= time
+    subscriber_id: Optional[str] = None   # id= subscriber ID
+    area_id: Optional[str] = None         # ri= area ID
+    peripheral_id: Optional[str] = None   # pi= peripheral ID
+    automated_id: Optional[str] = None    # ai= automated ID
+    phone_id: Optional[str] = None        # ph= telephone ID
+    sia_level: Optional[str] = None       # lv= SIA level
+    value: Optional[str] = None           # va= SIA value
+    sia_subscriber_id: Optional[str] = None  # ss= SIA subscriber ID
+    route_group: Optional[str] = None     # rg= route group (2 chars)
+    sia_path: Optional[str] = None        # pt= SIA path (3 chars)
     event_code: Optional[str] = None
-    event_description: Optional[str] = None 
+    event_description: Optional[str] = None
     zone: Optional[str] = None
-    
+
     # Parsed from ASCII Payload
     action_text: Optional[str] = None
 
@@ -59,7 +70,7 @@ def decode_unknown_text(data: bytes, char_map: dict) -> str:
 
     except Exception as e:
         log.warning("Could not decode text data: %s", e)
-        return ""
+        return data.decode("utf-8", errors="replace").strip()
 
 def parse_account_payload(payload: bytes, event: GalaxyEvent):
     """Parses the clean payload of an ACCOUNT_ID block."""
@@ -69,64 +80,89 @@ def parse_account_payload(payload: bytes, event: GalaxyEvent):
 
 def parse_data_payload(payload: bytes, event: GalaxyEvent, event_code_descriptions: Dict):
     """
-    Parses the clean payload of a NEW_EVENT block (Command Byte 'N').
+    Parses the clean payload of a NEW_EVENT (alarm) or OLD_EVENT (non-alarm) block.
 
-    The payload is a string of sections delimited by '/', for example:
-      - 'ti11:45/id001/pi010/CL'
-      - 'ti11:46/BA1011'
+    Payload is '/'-delimited sections. Lowercase 2-char prefixes are data modifiers;
+    uppercase 2-char starts are the event code (with optional zone suffix).
+    All field values default to 4 characters wide unless noted (rg=2, pt=3).
+
+    Known field codes:
+      da=date  ti=time  id=subscriber  ri=area  pi=peripheral  ai=automated
+      ph=phone  lv=level  va=value  ss=sia_subscriber  rg=route_group(2)  pt=path(3)
+
+    Examples:
+      'ti11:45/id001/pi010/CL'
+      'ti11:46/BA1011'
+      'da0604/ti1145/id0001/ri0001/pi0010/CL'
     """
     event.data_payload = payload
     data_str = payload.decode('utf-8', errors='ignore')
 
-    # The payload consists of sections separated by '/', the last one is special (ECzzzz).
     sections = data_str.split('/')
     if not sections:
         return
 
-    # Process all sections before the last one for identifiers, ti, id, pi, ri, va.
-    # We loop through them one by one, but skip the last one.
-    for section in sections[:-1]:
-        if section.startswith('ti'): # ti11:45
-            event.time = section[2:] # 11:45
-            log.debug("Parsed time: '%s'", event.time)
-        elif section.startswith('id'):  # id001
-            event.user_id = section[2:] # 001
-            log.debug("Parsed user_id: '%s'", event.user_id)
-        elif section.startswith('pi'):    # pi010
-            event.partition = section[2:] # 010
-            log.debug("Parsed partition: '%s'", event.partition)
-        elif section.startswith('ri'):
-            event.group = section[2:]
-            log.debug("Parsed group: '%s'", event.group)
-        elif section.startswith('va'):
-            event.value = section[2:]
-            log.debug("Parsed value: '%s'", event.value)
+    for section in sections:
+        if not section:
+            continue
+        if section[:2].islower():
+            # Data modifier section
+            val = section[2:]
+            if section.startswith('da'):
+                event.date = val
+                log.debug("Parsed date: '%s'", val)
+            elif section.startswith('ti'):
+                event.time = val
+                log.debug("Parsed time: '%s'", val)
+            elif section.startswith('id'):
+                event.subscriber_id = val.lstrip('0') or '0'
+                log.debug("Parsed subscriber_id: '%s'", event.subscriber_id)
+            elif section.startswith('ri'):
+                event.area_id = val.lstrip('0') or '0'
+                log.debug("Parsed area_id: '%s'", event.area_id)
+            elif section.startswith('pi'):
+                event.peripheral_id = val.lstrip('0') or '0'
+                log.debug("Parsed peripheral_id: '%s'", event.peripheral_id)
+            elif section.startswith('ai'):
+                event.automated_id = val.lstrip('0') or '0'
+                log.debug("Parsed automated_id: '%s'", event.automated_id)
+            elif section.startswith('ph'):
+                event.phone_id = val
+                log.debug("Parsed phone_id: '%s'", val)
+            elif section.startswith('lv'):
+                event.sia_level = val
+                log.debug("Parsed sia_level: '%s'", val)
+            elif section.startswith('va'):
+                event.value = val.lstrip('0') or '0'
+                log.debug("Parsed value: '%s'", event.value)
+            elif section.startswith('ss'):
+                event.sia_subscriber_id = val
+                log.debug("Parsed sia_subscriber_id: '%s'", val)
+            elif section.startswith('rg'):
+                event.route_group = val
+                log.debug("Parsed route_group: '%s'", val)
+            elif section.startswith('pt'):
+                event.sia_path = val
+                log.debug("Parsed sia_path: '%s'", val)
+            else:
+                log.warning("Unknown data section modifier '%s' in payload: %r", section, payload)
+        elif section[:2].isupper():
+            # Event code section: 2 uppercase letters + optional 3-4 digit zone
+            ec_match = re.match(r'([A-Z]{2})(\d{3,4})?', section)
+            if ec_match:
+                event.event_code = ec_match.group(1)
+                log.debug("Parsed event_code: '%s'", event.event_code)
+                event.event_description = event_code_descriptions.get(event.event_code, "Unknown")
+                log.debug("Mapped event description: '%s'", event.event_description)
+                if ec_match.group(2):
+                    event.zone = ec_match.group(2).lstrip('0') or '0'
+                    log.debug("Parsed zone: '%s'", event.zone)
+            else:
+                log.warning("Could not parse event code from section: %s", section)
         else:
-            log.debug("Unknown data section identifier found: '%s'", section)
-    
-    # Process the last section ('CL' or 'BA1011')
-    # It always contains the 2-character Event Code.
-    # It may also have a 3-4 digit Zone Number appended directly to the code.
-    last_section = sections[-1]
+            log.warning("Unknown data section '%s' in payload: %r", section, payload)
 
-    # We use regex to extract the two parts:
-    #   - Group 1: ([A-Z]{2})   -> Exactly two uppercase letters (the Event Code)
-    #   - Group 2: (\d{3,4})?  -> An optional group of 3 or 4 digits (the Zone)
-    ec_match = re.match(r'([A-Z]{2})(\d{3,4})?', last_section)
-    if ec_match:
-        event.event_code = ec_match.group(1)
-        log.debug("Parsed event_code: '%s'", event.event_code)
-        # Look up the human-readable description for this event code.
-        event.event_description = event_code_descriptions.get(event.event_code, "Unknown")
-        log.debug("Mapped event description: '%s'", event.event_description)
-        # Check if the optional Zone group was found.
-        if ec_match.group(2):
-            event.zone = ec_match.group(2)
-            log.debug("Parsed zone: '%s'", event.zone)
-    else:
-        log.warning("Could not parse event code from last section: %s", last_section)
-
-def parse_ascii_payload(payload: bytes, event: GalaxyEvent, char_map: Dict[bytes, str]):
+def parse_ascii_payload(payload: bytes, event: GalaxyEvent, char_map: Dict[int, str]):
     """Parses the clean payload of an ASCII block."""
     event.ascii_payload = payload
     event.action_text = decode_unknown_text(payload, char_map)
@@ -155,15 +191,19 @@ def parse_galaxy_event(blocks: List[Dict], account_sites: Dict,
         if command == 'ACCOUNT_ID':
             parse_account_payload(payload, event)
             if event.account:
-                # Use the mapped site name if it exists, otherwise fall back to the account number itself.
                 event.site_name = account_sites.get(event.account, event.account)
-        
+
         elif command == 'NEW_EVENT':
-           parse_data_payload(payload, event, event_code_descriptions)
-            
+            parse_data_payload(payload, event, event_code_descriptions)
+            event.is_alarm = True
+
+        elif command == 'OLD_EVENT':
+            parse_data_payload(payload, event, event_code_descriptions)
+            event.is_alarm = False
+
         elif command == 'ASCII':
             parse_ascii_payload(payload, event, char_map)
-            
+
         else:
             log.warning("Unknown command '%s' passed to parser. Payload: %r", command, payload)
             

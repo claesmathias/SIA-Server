@@ -16,6 +16,7 @@ import logging
 import logging.handlers
 import sys
 import re
+import ast
 from galaxy.constants import UNKNOWN_CHAR_MAP
 
 log = logging.getLogger(__name__)
@@ -122,11 +123,14 @@ class AppConfig:
         self.LISTEN_ADDR      = '0.0.0.0'
         self.LISTEN_PORT      = 10000
         self.REJECT_POLICY    = 'respond'
-        self.IP_CHECK_ENABLED = False
-        self.IP_CHECK_ADDR    = '0.0.0.0'
-        self.IP_CHECK_PORT    = 10001
-        self.ACCOUNT_SITES    = {}
-        self.NTFY_TOPICS      = {}
+        self.IP_CHECK_ENABLED      = False
+        self.IP_CHECK_ADDR         = '0.0.0.0'
+        self.IP_CHECK_PORT         = 10001
+        self.IP_CHECK_WATCHDOG     = 2.1   # threshold multiplier; <= 1.0 disables watchdog
+        self.IP_CHECK_LOST_PRIO    = 4
+        self.IP_CHECK_RESTORE_PRIO = 2
+        self.ACCOUNT_SITES         = {}
+        self.APPRISE_TOPICS   = {}
         self.ACCOUNT_POLICIES = {}
         self.MAX_QUEUE_SIZE   = 50
         self.MAX_RETRIES      = 10
@@ -151,34 +155,51 @@ def _validate_port(port: int, section: str, key: str) -> bool:
 
 def _parse_topic_config(config: configparser.ConfigParser, section_name: str) -> dict | None:
     """Helper function to parse notification settings for a given section."""
-    if not config.getboolean(section_name, 'ntfy_enabled', fallback=False):
+    if config.has_option(section_name, 'apprise_enabled'):
+        enabled = config.getboolean(section_name, 'apprise_enabled', fallback=False)
+    else:
+        enabled = config.getboolean(section_name, 'ntfy_enabled', fallback=False)
+
+    if not enabled:
         return None
-    if not config.has_option(section_name, 'ntfy_topic'):
-        log.warning("Section [%s] has NTFY_ENABLED=Yes but is missing NTFY_TOPIC. "
+
+    # Support multiple Apprise services via APPRISE_SERVICES (comma/newline/semicolon separated)
+    services = None
+    if config.has_option(section_name, 'apprise_services'):
+        services_raw = config.get(section_name, 'apprise_services')
+        # Allow either a simple separator list (comma/semicolon/newline)
+        # or a Python-style list: ['url1', 'url2']
+        if services_raw.strip().startswith('['):
+            try:
+                parsed = ast.literal_eval(services_raw)
+                if isinstance(parsed, (list, tuple)):
+                    services = [str(s).strip() for s in parsed if str(s).strip()]
+                else:
+                    services = [str(parsed).strip()]
+            except Exception:
+                services = [s.strip() for s in re.split(r'[,;\n\r]+', services_raw) if s.strip()]
+        else:
+            services = [s.strip() for s in re.split(r'[,;\n\r]+', services_raw) if s.strip()]
+    elif config.has_option(section_name, 'apprise_url'):
+        # Legacy single-URL option fallback (kept for backwards compatibility)
+        services = [config.get(section_name, 'apprise_url')]
+    else:
+        # Older ntfy specific option fallback
+        ntfy = config.get(section_name, 'ntfy_topic', fallback=None)
+        if ntfy:
+            services = [ntfy]
+
+    if not services:
+        log.warning("Section [%s] has APPRISE_ENABLED=Yes but is missing APPRISE_SERVICES/APPRISE_URL. "
                     "Notifications for this section will be disabled.", section_name)
         return None
 
     topic_config = {'enabled': True}
-    topic_config['url']   = config.get(section_name, 'ntfy_topic')
-    topic_config['title'] = config.get(section_name, 'ntfy_title', fallback='Galaxy Alarm')
-
-    auth_method = config.get(section_name, 'ntfy_auth', fallback='None').lower()
-
-    if auth_method == 'token':
-        token = config.get(section_name, 'ntfy_token', fallback=None)
-        if token:
-            topic_config['auth'] = {'method': 'token', 'token': token}
-        else:
-            log.warning("In section [%s], auth is 'Token' but 'ntfy_token' is missing. "
-                        "Auth will be disabled.", section_name)
-    elif auth_method == 'userpass':
-        user     = config.get(section_name, 'ntfy_user', fallback=None)
-        password = config.get(section_name, 'ntfy_pass', fallback=None)
-        if user and password:
-            topic_config['auth'] = {'method': 'userpass', 'user': user, 'pass': password}
-        else:
-            log.warning("In section [%s], auth is 'Userpass' but user/pass is incomplete. "
-                        "Auth will be disabled.", section_name)
+    # `urls` holds all configured Apprise service URLs. `url` remains for compatibility.
+    topic_config['urls'] = services
+    topic_config['url'] = services[0]
+    topic_config['title'] = config.get(section_name, 'apprise_title',
+                                      fallback=config.get(section_name, 'ntfy_title', fallback='Galaxy Alarm'))
 
     return topic_config
 
@@ -246,6 +267,48 @@ def load_full_config(config_file: str = 'sia-server.conf') -> AppConfig:
             except ValueError:
                 log.critical("Configuration Error in [IP-Check]: listen_port must be a number.")
                 is_valid = False
+
+            # --- Watchdog threshold ---
+            try:
+                threshold = config.getfloat('IP-Check', 'watchdog_threshold',
+                                            fallback=app_config.IP_CHECK_WATCHDOG)
+                if threshold <= 1.0:
+                    log.info("Watchdog is DISABLED (watchdog_threshold = %.1f).", threshold)
+                    app_config.IP_CHECK_WATCHDOG = threshold
+                elif threshold > 10.0:
+                    log.warning("Invalid WATCHDOG_THRESHOLD '%.1f' in [IP-Check]. "
+                                "Must be 1.1 - 10.0 or <= 1.0 to disable. Using default %.1f.",
+                                threshold, app_config.IP_CHECK_WATCHDOG)
+                else:
+                    app_config.IP_CHECK_WATCHDOG = threshold
+            except ValueError:
+                log.warning("Invalid WATCHDOG_THRESHOLD in [IP-Check]. Must be a number. "
+                            "Using default %.1f.", app_config.IP_CHECK_WATCHDOG)
+
+            # --- Watchdog notification priorities ---
+            try:
+                lost_prio = config.getint('IP-Check', 'watchdog_lost_prio',
+                                          fallback=app_config.IP_CHECK_LOST_PRIO)
+                if not 1 <= lost_prio <= 5:
+                    log.warning("Invalid WATCHDOG_LOST_PRIO '%d'. Must be 1-5. Using default %d.",
+                                lost_prio, app_config.IP_CHECK_LOST_PRIO)
+                else:
+                    app_config.IP_CHECK_LOST_PRIO = lost_prio
+            except ValueError:
+                log.warning("Invalid WATCHDOG_LOST_PRIO in [IP-Check]. Must be a number. "
+                            "Using default %d.", app_config.IP_CHECK_LOST_PRIO)
+
+            try:
+                restore_prio = config.getint('IP-Check', 'watchdog_restore_prio',
+                                             fallback=app_config.IP_CHECK_RESTORE_PRIO)
+                if not 1 <= restore_prio <= 5:
+                    log.warning("Invalid WATCHDOG_RESTORE_PRIO '%d'. Must be 1-5. Using default %d.",
+                                restore_prio, app_config.IP_CHECK_RESTORE_PRIO)
+                else:
+                    app_config.IP_CHECK_RESTORE_PRIO = restore_prio
+            except ValueError:
+                log.warning("Invalid WATCHDOG_RESTORE_PRIO in [IP-Check]. Must be a number. "
+                            "Using default %d.", app_config.IP_CHECK_RESTORE_PRIO)
 
     # --- Check for port conflicts ---
     if app_config.IP_CHECK_ENABLED and app_config.LISTEN_PORT == app_config.IP_CHECK_PORT:
@@ -318,7 +381,7 @@ def load_full_config(config_file: str = 'sia-server.conf') -> AppConfig:
 
         topic_config = _parse_topic_config(config, section_name)
         if topic_config:
-            app_config.NTFY_TOPICS[account_number] = topic_config
+            app_config.APPRISE_TOPICS[account_number] = topic_config
 
         # --- Parse Connection Policy ---
         policy_str = config.get(section_name, 'enabled', fallback='yes').lower()
