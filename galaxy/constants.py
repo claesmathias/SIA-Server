@@ -10,7 +10,8 @@ and their human-readable names.
 COMMANDS = {
     # --- Client to Server Commands (Observed) ---
     0x23: 'ACCOUNT_ID',
-    0x4E: 'NEW_EVENT',
+    0x4E: 'NEW_EVENT',   # Alarm event       (Galaxy block type: Alarm)
+    0x4F: 'OLD_EVENT',   # Non-alarm event   (Galaxy block type: Non-Alarm)
     0x41: 'ASCII',
     0x30: 'END_OF_DATA',
 
@@ -26,13 +27,12 @@ COMMANDS = {
     0x37: 'ACK_AND_DISCONNECT',
     0x08: 'ALT_ACKNOWLEDGE',
     0x09: 'ALT_REJECT',
-    
+
     # Info Blocks
     0x43: 'CONTROL',
     0x45: 'ENVIRONMENTAL',
-    0x4F: 'OLD_EVENT',
     0x50: 'PROGRAM',
-    
+
     # Special Blocks
     0x40: 'CONFIGURATION',
     0x3F: 'REMOTE_LOGIN',
@@ -71,6 +71,7 @@ EVENT_CODE_DESCRIPTIONS = {
 
     # C - Closing
     'CA': "Closing Report (Automatic)",
+    'CB': "Night Set",
     'CE': "Closing Extend",
     'CG': "Area Closed",
     'CI': "Fail to Set", # Corrected from "Cl"
@@ -245,5 +246,11 @@ EVENT_CODE_DESCRIPTIONS = {
 UNKNOWN_CHAR_MAP = {
     0xE9: 'Ø',  # Confirmed: panel shows Ø, CP437 gives Θ
     0xED: 'ø',  # Confirmed: panel shows ø, CP437 gives φ
+    0x99: 'Ö',
+    0x8E: 'Ä',
+    0x84: 'ä',
+    0x94: 'ö',
+    0x86: 'å',
+    0x8F: 'Å',
 }
 

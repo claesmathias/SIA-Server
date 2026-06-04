@@ -8,10 +8,26 @@ via Apprise to any supported destination based on a parsed GalaxyEvent.
 import logging
 import sys
 import time
-from typing import Dict
+from typing import Dict, Union
 from queue import Queue, Full as QueueFull, Empty
 from threading import Thread, Event as ThreadEvent
 from galaxy.parser import GalaxyEvent
+
+
+class MessageEvent:
+    """
+    A generic notification message not tied to a specific SIA alarm event.
+    Used for watchdog heartbeat alerts and other system-level notifications.
+    Priority is fixed by the caller rather than derived from event codes.
+    """
+    def __init__(self, account: str, site_name: str, message: str, priority: int):
+        self.account           = account
+        self.site_name         = site_name
+        self.action_text       = message
+        self.priority          = priority
+        self.event_code        = None
+        self.event_description = message
+        self.time              = None
 
 # --- Dependency and Logging Initialization ---
 
@@ -54,19 +70,21 @@ def get_event_priority(event_code: str, priority_map: Dict, default_priority: in
     return priority_map.get(event_code, default_priority)
 
 
-def format_notification_text(event: GalaxyEvent) -> str:
+def format_notification_text(event: Union[GalaxyEvent, MessageEvent]) -> str:
     """
     Formats the notification message text.
-    It intelligently chooses between the rich ASCII block text (if available)
+    For MessageEvent, returns action_text directly.
+    For GalaxyEvent, chooses the rich ASCII block text (if available)
     or constructs a message from the Data block fields.
     """
-    # Use a more descriptive name to avoid shadowing the 'time' module.
+    if isinstance(event, MessageEvent):
+        return event.action_text
+
     event_time = event.time or "??"
-    
+
     # If we have the rich text from the ASCII block, use it (SIA Level 3+)
     if event.action_text:
         notification = f"{event_time} {event.action_text}"
-        # Add zone info if it was parsed separately and isn't already in the text
         if event.zone and event.zone not in str(event.action_text):
             notification += f" (Zone {event.zone})"
     # Otherwise, build a basic message from the Data block fields (SIA Level 2)
@@ -74,13 +92,17 @@ def format_notification_text(event: GalaxyEvent) -> str:
         notification = f"{event_time}"
         if event.event_code:
             notification += f" Event: {event.event_code} ({event.event_description})"
-        if event.user_id:
-            notification += f" User: {event.user_id}"
+        if event.subscriber_id:
+            notification += f" User: {event.subscriber_id}"
         if event.zone:
             notification += f" Zone: {event.zone}"
-        if event.partition:
-            notification += f" Partition: {event.partition}"
-    
+        if event.area_id:
+            notification += f" Area: {event.area_id}"
+        if event.peripheral_id:
+            notification += f" Peripheral: {event.peripheral_id}"
+        if event.value:
+            notification += f" Value: {event.value}"
+
     return notification.strip()
 
 
@@ -95,8 +117,8 @@ def _map_priority_to_notify_type(priority: int) -> 'apprise.NotifyType':
     return apprise.NotifyType.FAILURE
 
 
-def _dispatch_apprise_notification(event: GalaxyEvent, apprise_topics: Dict, priority_map: Dict,
-                                  default_priority: int) -> bool:
+def _dispatch_apprise_notification(event: Union[GalaxyEvent, MessageEvent], apprise_topics: Dict,
+                                  priority_map: Dict, default_priority: int) -> bool:
     """Sends a formatted notification using topic-specific Apprise configuration."""
 
     topic_config = apprise_topics.get(event.account, apprise_topics.get('default'))
@@ -111,7 +133,10 @@ def _dispatch_apprise_notification(event: GalaxyEvent, apprise_topics: Dict, pri
         return False
 
     message = format_notification_text(event)
-    priority = get_event_priority(event.event_code, priority_map, default_priority)
+    if isinstance(event, MessageEvent):
+        priority = event.priority
+    else:
+        priority = get_event_priority(event.event_code, priority_map, default_priority)
 
     notification_title = topic_config.get('title', 'Galaxy Alarm')
     account_display = event.site_name or event.account
@@ -237,23 +262,32 @@ class NotificationDispatcher(Thread):
         self.queue.put((None, 0, 0)) # Unblock the .get() call
 
 
-# --- This is the function that sia-server will call ---
-def enqueue_notification(event: GalaxyEvent, queue: Queue):
-    """
-    Puts a new event onto the notification queue.
-    If the queue is full, it removes the oldest item to make space.
-    """
+def _enqueue(event: Union[GalaxyEvent, MessageEvent], queue: Queue):
+    """Internal helper: put any event type onto the notification queue."""
     if queue.full():
         try:
             oldest_event, _, _ = queue.get_nowait()
-            log.warning("Notification queue is full. Dropping the oldest event to make space for the new one.")
+            log.warning("Notification queue is full. Dropping the oldest event to make space.")
             queue.task_done()
         except Empty:
             pass
-            
     try:
-        # A new event is always ready to be sent immediately (next_attempt_time = 0)
-        queue.put_nowait((event, 0, 0)) # event, retry_count, next_attempt_time
+        queue.put_nowait((event, 0, 0))  # event, retry_count, next_attempt_time
         log.debug("Event for account %s added to notification queue.", event.account)
     except QueueFull:
         log.error("Notification queue is still full! Event for %s was lost.", event.account)
+
+
+def enqueue_notification(event: GalaxyEvent, queue: Queue):
+    """Puts a SIA GalaxyEvent onto the notification queue."""
+    _enqueue(event, queue)
+
+
+def enqueue_message_notification(account: str, site_name: str,
+                                  message: str, priority: int,
+                                  queue: Queue):
+    """
+    Puts a generic message notification onto the notification queue.
+    Used by ip_check.py for watchdog heartbeat-lost/restored alerts.
+    """
+    _enqueue(MessageEvent(account, site_name, message, priority), queue)

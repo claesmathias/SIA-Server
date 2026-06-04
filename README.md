@@ -115,26 +115,35 @@ The container stores state and plugins in the `./apprise` folder on the host, so
 
 If you want to access the Apprise web UI or API, add a port mapping to `docker-compose.yml` for the Apprise service and restart the compose stack.
 
-## Testing with sia_server_tester.py
+## Testing with tests/test_sia_server.py
 
-This repository includes `sia_server_tester.py`, a helper script that builds and sends raw Galaxy SIA packets to the server.
-Use it from the host machine to verify the SIA server receives and processes panel messages.
+This repository includes `tests/test_sia_server.py`, a helper script that builds and sends raw Galaxy SIA packets to the server.
+Use it from the project root to verify the SIA server receives and processes panel messages.
+It reports the server's ACK/REJECT response to each block individually.
 
 Example using the built-in sample message:
 
 ```bash
-python sia_server_tester.py --host 127.0.0.1 --port 10000 --send-sample
+python tests/test_sia_server.py --host 127.0.0.1 --port 10000 --send-sample
 ```
 
-Example using the same payload shown in the README:
+Example alarm event, SIA Level 2 (no ASCII block):
 
 ```bash
-python sia_server_tester.py \
+python tests/test_sia_server.py \
   --host 127.0.0.1 --port 10000 \
   --account-id 023499 \
-  --new-event 'ti23:42/id023/pi013/CG' \
-  --ascii ' PART SET USER' \
-  --delay 0.05
+  --new-event 'ti23:42/ri01/id023/BA1011'
+```
+
+Example non-alarm event with ASCII block (SIA Level 3):
+
+```bash
+python tests/test_sia_server.py \
+  --host 127.0.0.1 --port 10000 \
+  --account-id 023499 \
+  --old-event 'ti23:42/id023/pi013/CG' \
+  --ascii ' PART SET USER'
 ```
 
 If the Docker host is remote, replace `127.0.0.1` with the host IP address.
@@ -142,7 +151,7 @@ If the Docker host is remote, replace `127.0.0.1` with the host IP address.
 Example of raw hex segment mode:
 
 ```bash
-python sia_server_tester.py \
+python tests/test_sia_server.py \
   --segment 46233032333439399f \
   --segment 564e746932333a34322f69643032332f70693031332f4347fb \
   --segment 4e41205041525420534554205553455294 \

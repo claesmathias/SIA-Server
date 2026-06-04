@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 Galaxy SIA Server
 Receives, validates, and parses proprietary SIA protocol messages from
@@ -7,8 +6,7 @@ Honeywell Galaxy Flex alarm systems. It sends notifications via Apprise to suppo
 
 This server is configured via 'sia-server.conf' and 'configuration.py'.
 """
-# --- Application Version ---
-__version__ = "2.2.0-beta2"
+from __future__ import annotations
 
 import os
 import argparse
@@ -325,12 +323,16 @@ async def handle_connection(notification_queue: Queue, reader, writer):
             )
             
             log.info("Site: %s (Account: %s)", event.site_name, event.account)
+
+            if not event.event_code and not event.action_text:
+                log.debug("--- Event %d skipped (heartbeat/poll, no event data) ---", i)
+                continue
+
             description = event.action_text or event.event_description
-            log.info("Event: %s (%s)", event.event_code, description)
-            
-            # Send the notification to our que:
+            log.info("Event: %s (%s) alarm=%s", event.event_code, description, event.is_alarm)
+
             enqueue_notification(event, notification_queue)
-            
+
             log.debug("--- Event %d complete ---", i)
 
     except (ConnectionResetError, BrokenPipeError):
@@ -435,24 +437,15 @@ def handle_shutdown(signum, frame):
     log.info("Received shutdown signal (%d), stopping server...", signum)
     sys.exit(0)
 
-def get_build_info():
-    """Return version metadata injected at image build time, with local defaults."""
-    return {
-        "version": os.getenv("APP_VERSION") or __version__,
-        "build": os.getenv("BUILD_NUMBER") or "local",
-        "commit": (os.getenv("COMMIT_SHA") or "dev")[:7],
-    }
-
 def main():
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
 
-    build_info = get_build_info()
-    log.info(
-        "Starting Galaxy SIA Server version %s (build %s, commit %s)",
-        build_info["version"],
-        build_info["build"],
-        build_info["commit"],
+    logging.info(
+        "Starting Galaxy SIA Server  | version=%s | build=%s | commit=%s",
+        os.getenv("APP_VERSION", "unknown"),
+        os.getenv("BUILD_NUMBER", "local"),
+        os.getenv("COMMIT_SHA", "dev")[:7]
     )
 
     notification_queue = Queue(maxsize=config.MAX_QUEUE_SIZE)
