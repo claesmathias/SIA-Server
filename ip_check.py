@@ -192,8 +192,28 @@ def validate_ip_check_packet(data: bytes) -> bool:
 
 
 def extract_account(data: bytes) -> str:
-    """Extract account number from IP Check packet bytes 1-8."""
-    return data[1:9].decode('ascii', errors='ignore').lstrip('0')
+    """Extract account number from IP Check packet bytes 1-8 (zero-padded)."""
+    return data[1:9].decode('ascii', errors='ignore')
+
+
+def lookup_account_key(account_raw: str, known_keys) -> str:
+    """
+    Maps the zero-padded account from the heartbeat packet onto the account
+    key used in sia-server.conf.
+
+    The packet pads the account to 8 digits (e.g. '00023499'), while config
+    sections are typically 4 or 6 digits (e.g. '023499'). Stripping ALL
+    leading zeros breaks lookups for accounts whose configured form itself
+    starts with '0'. We compare with leading zeros normalised on both sides
+    and return the configured key.
+    """
+    if account_raw in known_keys:
+        return account_raw
+    stripped = account_raw.lstrip('0')
+    for key in known_keys:
+        if key != 'default' and key.lstrip('0') == stripped:
+            return key
+    return stripped or account_raw
 
 
 async def handle_ip_check(reader, writer, notification_queue: Queue):
@@ -231,7 +251,11 @@ async def handle_ip_check(reader, writer, notification_queue: Queue):
             return
 
         # --- ACCOUNT POLICY ENFORCEMENT ---
-        account_number = extract_account(data)
+        account_raw = extract_account(data)
+        account_number = lookup_account_key(
+            account_raw,
+            set(config.ACCOUNT_POLICIES) | set(config.ACCOUNT_SITES)
+        )
         policy = config.ACCOUNT_POLICIES.get(
             account_number,
             config.ACCOUNT_POLICIES.get('default', 'yes')

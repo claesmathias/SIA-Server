@@ -6,6 +6,7 @@ via Apprise to any supported destination based on a parsed GalaxyEvent.
 """
 
 import logging
+import re
 import sys
 import time
 from typing import Dict, Union
@@ -65,6 +66,12 @@ except ImportError:
     sys.exit(1) # Exit the entire application immediately.
 
 
+def mask_url_credentials(url: str) -> str:
+    """Masks tokens/passwords in Apprise URLs before they reach the logs."""
+    # scheme://user:secret@host  or  scheme://token@host
+    return re.sub(r'(://)([^/@]+)(@)', r'\1***\3', url)
+
+
 def get_event_priority(event_code: str, priority_map: Dict, default_priority: int) -> int:
     """Gets the notification priority for a given event code from the defaults map."""
     return priority_map.get(event_code, default_priority)
@@ -85,7 +92,10 @@ def format_notification_text(event: Union[GalaxyEvent, MessageEvent]) -> str:
     # If we have the rich text from the ASCII block, use it (SIA Level 3+)
     if event.action_text:
         notification = f"{event_time} {event.action_text}"
-        if event.zone and event.zone not in str(event.action_text):
+        # Digit-boundary match: zone "101" must not be considered "present"
+        # inside text that merely contains "1010".
+        if event.zone and not re.search(r'(?<!\d)' + re.escape(event.zone) + r'(?!\d)',
+                                        str(event.action_text)):
             notification += f" (Zone {event.zone})"
     # Otherwise, build a basic message from the Data block fields (SIA Level 2)
     else:
@@ -162,7 +172,8 @@ def _dispatch_apprise_notification(event: Union[GalaxyEvent, MessageEvent], appr
 
         topic_config['apprise'] = apprise_client
 
-    log.debug("Sending notification (priority %d) to %s: %s", priority, ','.join(apprise_urls), message)
+    log.debug("Sending notification (priority %d) to %s: %s", priority,
+              ','.join(mask_url_credentials(u) for u in apprise_urls), message)
     log.info("Sending notification (priority %d) for account %s: %s", priority, account_display, message)
 
     try:
@@ -217,25 +228,37 @@ class NotificationDispatcher(Thread):
 
     def run(self):
         log.info("NotificationDispatcher thread started.")
+        pending_retries = []  # items not yet due: list of (event, retry_count, next_attempt_time)
         while not self.shutdown_event.is_set():
-            event, retry_count, next_attempt_time = self.queue.get()
-            if not event: # This is the shutdown signal
+            # Re-inject any retries that have become due. Keeping them in a
+            # local list (instead of cycling them through the queue) avoids
+            # the previous 1-second busy loop and never delays fresh events.
+            now = time.time()
+            due = [item for item in pending_retries if item[2] <= now]
+            for item in due:
+                pending_retries.remove(item)
+                try:
+                    self.queue.put_nowait(item)
+                except QueueFull:
+                    log.error("Queue full. Dropping due retry for account %s.",
+                              getattr(item[0], 'account', '?'))
+
+            try:
+                event, retry_count, next_attempt_time = self.queue.get(timeout=1.0)
+            except Empty:
+                continue
+            if not event:  # This is the shutdown signal
                 self.queue.task_done()
                 break
 
-            current_time = time.time()
-
-            if current_time < next_attempt_time:
-                # It's not time to retry this item yet.
-                # Put it back at the end of the queue and immediately process the next item.
-                self.queue.put((event, retry_count, next_attempt_time))
+            if time.time() < next_attempt_time:
+                # Not due yet - park it locally and move on.
+                pending_retries.append((event, retry_count, next_attempt_time))
                 self.queue.task_done()
-                # Sleep for a short time to prevent a tight loop if all items are in a wait state.
-                time.sleep(1.0) 
                 continue
-            
+
             success = _dispatch_apprise_notification(event, self.apprise_topics, self.priority_map, self.default_priority)
-            
+
             if not success:
                 # The notification failed. Schedule it for a future retry.
                 retry_count += 1
@@ -244,15 +267,12 @@ class NotificationDispatcher(Thread):
                     new_next_attempt_time = time.time() + delay
                     log.warning("Dispatch failed for account %s. Re-queueing for retry in %d mins (attempt %d).",
                                 event.account, delay // 60, retry_count)
-                    
-                    try:
-                        self.queue.put_nowait((event, retry_count, new_next_attempt_time))
-                    except QueueFull:
-                        log.error("Queue is full. Cannot re-queue failed notification for %s.", event.account)
+
+                    pending_retries.append((event, retry_count, new_next_attempt_time))
                 else:
                     log.error("Dispatch failed for account %s after %d retries. Giving up.",
                               event.account, self.max_retries)
-            
+
             self.queue.task_done()
         log.info("NotificationDispatcher thread stopped.")
 
@@ -263,19 +283,28 @@ class NotificationDispatcher(Thread):
 
 
 def _enqueue(event: Union[GalaxyEvent, MessageEvent], queue: Queue):
-    """Internal helper: put any event type onto the notification queue."""
-    if queue.full():
+    """
+    Puts a new event onto the notification queue.
+
+    If the queue is full, the oldest item is evicted to make space. The
+    eviction loop retries a couple of times because the dispatcher thread
+    may consume/produce concurrently (avoids a check-then-act race).
+    """
+    for _ in range(3):
         try:
-            oldest_event, _, _ = queue.get_nowait()
-            log.warning("Notification queue is full. Dropping the oldest event to make space.")
-            queue.task_done()
-        except Empty:
-            pass
-    try:
-        queue.put_nowait((event, 0, 0))  # event, retry_count, next_attempt_time
-        log.debug("Event for account %s added to notification queue.", event.account)
-    except QueueFull:
-        log.error("Notification queue is still full! Event for %s was lost.", event.account)
+            queue.put_nowait((event, 0, 0))  # event, retry_count, next_attempt_time
+            log.debug("Event for account %s added to notification queue.", event.account)
+            return
+        except QueueFull:
+            try:
+                dropped, _, _ = queue.get_nowait()
+                queue.task_done()
+                log.warning("Notification queue full. Dropped oldest event (account %s) "
+                            "to make room for new event (account %s).",
+                            getattr(dropped, 'account', '?'), event.account)
+            except Empty:
+                pass
+    log.error("Notification queue is still full! Event for %s was lost.", event.account)
 
 
 def enqueue_notification(event: GalaxyEvent, queue: Queue):

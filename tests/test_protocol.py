@@ -1,138 +1,183 @@
-"""Tests for the SIA framing helpers in sia-server.py.
+"""Tests for galaxy.protocol: checksum, block build/validate, stream framing.
 
-validate_and_strip and build_and_send aren't importable as standalone functions,
-so we re-implement the frame logic here and test it end-to-end against the
-constants from galaxy.constants.
+These import the real production module (used by sia-server.py, ip_check.py
+and the test client) rather than reimplementing the logic, so a regression
+in the actual framing code is caught here.
 """
 import pytest
+from galaxy.protocol import (
+    build_block, validate_and_strip, extract_blocks,
+    expected_block_size, xor_checksum, MAX_PAYLOAD,
+)
 from galaxy.constants import COMMANDS, COMMAND_BYTES
 
 
-# ── Frame building / parsing helpers (mirrors sia-server.py logic) ────────────
+# ── Block build / validate ────────────────────────────────────────────────────
 
-def build_frame(command: str, payload: bytes = b"") -> bytes:
-    command_byte = COMMAND_BYTES[command]
-    length_byte = len(payload) + 0x40
-    msg = bytes([length_byte, command_byte]) + payload
-    checksum = 0xFF
-    for b in msg:
-        checksum ^= b
-    return msg + bytes([checksum])
-
-
-def parse_frame(data: bytes):
-    """Returns (command_name, payload) or (None, None) on error."""
-    if len(data) < 3:
-        return None, None
-    declared_len = data[0] - 0x40
-    actual_len = len(data) - 3
-    if declared_len != actual_len:
-        return None, None
-    checksum = 0xFF
-    for b in data[:-1]:
-        checksum ^= b
-    if checksum != data[-1]:
-        return None, None
-    cmd_byte = data[1]
-    cmd_name = COMMANDS.get(cmd_byte, f"UNKNOWN(0x{cmd_byte:02x})")
-    payload = data[2:-1]
-    return cmd_name, payload
-
-
-# ── Frame construction ────────────────────────────────────────────────────────
-
-class TestBuildFrame:
+class TestBuildBlock:
     def test_empty_payload_length_byte(self):
-        frame = build_frame("ACKNOWLEDGE")
-        assert frame[0] == 0x40  # length_byte = 0 + 0x40
+        block = build_block(COMMAND_BYTES['ACKNOWLEDGE'])
+        assert block[0] == 0x40
 
     def test_payload_sets_length_correctly(self):
-        frame = build_frame("ACCOUNT_ID", b"023499")
-        assert frame[0] == 0x40 + 6
+        block = build_block(COMMAND_BYTES['ACCOUNT_ID'], b'023499')
+        assert block[0] == 0x40 + 6
 
     def test_command_byte_correct(self):
-        frame = build_frame("ACKNOWLEDGE")
-        assert frame[1] == 0x38
+        block = build_block(COMMAND_BYTES['ACKNOWLEDGE'])
+        assert block[1] == 0x38
 
     def test_reject_command_byte(self):
-        frame = build_frame("REJECT")
-        assert frame[1] == 0x39
+        block = build_block(COMMAND_BYTES['REJECT'])
+        assert block[1] == 0x39
 
-    def test_checksum_valid(self):
-        frame = build_frame("ACCOUNT_ID", b"023499")
-        cmd, payload = parse_frame(frame)
-        assert cmd == "ACCOUNT_ID"
-        assert payload == b"023499"
+    def test_roundtrips_through_validate(self):
+        block = build_block(COMMAND_BYTES['ACCOUNT_ID'], b'023499')
+        cmd, payload = validate_and_strip(block)
+        assert cmd == COMMAND_BYTES['ACCOUNT_ID']
+        assert payload == b'023499'
+
+    def test_payload_too_long_raises(self):
+        with pytest.raises(ValueError):
+            build_block(0x4E, b'x' * (MAX_PAYLOAD + 1))
 
 
-# ── Frame parsing ─────────────────────────────────────────────────────────────
-
-class TestParseFrame:
+class TestValidateAndStrip:
     def test_valid_ack_roundtrips(self):
-        frame = build_frame("ACKNOWLEDGE")
-        cmd, payload = parse_frame(frame)
-        assert cmd == "ACKNOWLEDGE"
-        assert payload == b""
-
-    def test_valid_account_id_roundtrips(self):
-        frame = build_frame("ACCOUNT_ID", b"023499")
-        cmd, payload = parse_frame(frame)
-        assert cmd == "ACCOUNT_ID"
-        assert payload == b"023499"
+        block = build_block(COMMAND_BYTES['ACKNOWLEDGE'])
+        cmd, payload = validate_and_strip(block)
+        assert cmd == COMMAND_BYTES['ACKNOWLEDGE']
+        assert payload == b''
 
     def test_valid_new_event_roundtrips(self):
-        payload_data = b"ti11:45/id001/pi010/CL"
-        frame = build_frame("NEW_EVENT", payload_data)
-        cmd, payload = parse_frame(frame)
-        assert cmd == "NEW_EVENT"
+        payload_data = b'ti11:45/id001/pi010/CL'
+        block = build_block(COMMAND_BYTES['NEW_EVENT'], payload_data)
+        cmd, payload = validate_and_strip(block)
+        assert cmd == COMMAND_BYTES['NEW_EVENT']
         assert payload == payload_data
 
     def test_valid_old_event_roundtrips(self):
-        frame = build_frame("OLD_EVENT", b"ti11:45/CL")
-        cmd, payload = parse_frame(frame)
-        assert cmd == "OLD_EVENT"
-        assert payload == b"ti11:45/CL"
+        block = build_block(COMMAND_BYTES['OLD_EVENT'], b'ti11:45/CL')
+        cmd, payload = validate_and_strip(block)
+        assert cmd == COMMAND_BYTES['OLD_EVENT']
+        assert payload == b'ti11:45/CL'
+
+    def test_known_wire_sample(self):
+        # ACCOUNT_ID '023499' from the README hex segment examples
+        block = bytes.fromhex('46233032333439399f')
+        cmd, payload = validate_and_strip(block)
+        assert cmd == 0x23
+        assert payload == b'023499'
 
     def test_too_short_returns_none(self):
-        cmd, payload = parse_frame(b"\x40\x38")
-        assert cmd is None
+        assert validate_and_strip(b'\x40\x38') == (None, None)
+        assert validate_and_strip(b'') == (None, None)
 
     def test_length_mismatch_returns_none(self):
-        # Build a valid frame then corrupt the length byte
-        frame = bytearray(build_frame("ACKNOWLEDGE"))
-        frame[0] = 0x45  # claim 5 payload bytes, but there are 0
-        cmd, payload = parse_frame(bytes(frame))
-        assert cmd is None
+        block = bytearray(build_block(COMMAND_BYTES['ACKNOWLEDGE']))
+        block[0] = 0x45  # claim 5 payload bytes, but there are 0
+        assert validate_and_strip(bytes(block)) == (None, None)
+
+    def test_length_mismatch_trailing_extra_bytes(self):
+        block = build_block(0x4E, b'abc') + b'extra'
+        assert validate_and_strip(block) == (None, None)
 
     def test_bad_checksum_returns_none(self):
-        frame = bytearray(build_frame("ACKNOWLEDGE"))
-        frame[-1] ^= 0xFF  # flip checksum bits
-        cmd, payload = parse_frame(bytes(frame))
-        assert cmd is None
+        block = bytearray(build_block(COMMAND_BYTES['ACKNOWLEDGE']))
+        block[-1] ^= 0xFF
+        assert validate_and_strip(bytes(block)) == (None, None)
 
     def test_garbage_returns_none(self):
-        cmd, payload = parse_frame(b"\xff\xff\xff\xff")
-        assert cmd is None
+        assert validate_and_strip(b'\xff\xff\xff\xff') == (None, None)
 
     def test_unknown_command_byte_still_parses(self):
-        # SIA-Server-1 passes unknown commands through (unlike the HACS version)
-        # Build a raw frame with an unknown command byte 0x99
-        payload_data = b"data"
-        length_byte = len(payload_data) + 0x40
-        msg = bytes([length_byte, 0x99]) + payload_data
-        checksum = 0xFF
-        for b in msg:
-            checksum ^= b
-        frame = msg + bytes([checksum])
-        cmd, payload = parse_frame(frame)
-        assert cmd == "UNKNOWN(0x99)"
+        # Unknown command bytes pass through (the caller maps to UNKNOWN(0xXX))
+        payload_data = b'data'
+        block = build_block(0x99, payload_data)
+        cmd, payload = validate_and_strip(block)
+        assert cmd == 0x99
         assert payload == payload_data
 
     def test_end_of_data_roundtrips(self):
-        frame = build_frame("END_OF_DATA")
-        cmd, payload = parse_frame(frame)
-        assert cmd == "END_OF_DATA"
-        assert payload == b""
+        block = build_block(COMMAND_BYTES['END_OF_DATA'])
+        cmd, payload = validate_and_strip(block)
+        assert cmd == COMMAND_BYTES['END_OF_DATA']
+        assert payload == b''
+
+
+class TestExpectedBlockSize:
+    def test_minimum_length_byte(self):
+        assert expected_block_size(0x40) == 3
+
+    def test_typical_length_byte(self):
+        assert expected_block_size(0x46) == 9
+
+    def test_below_offset_is_implausible(self):
+        assert expected_block_size(0x3F) is None
+
+    def test_max_payload_accepted(self):
+        assert expected_block_size(0xFF) == MAX_PAYLOAD + 3
+
+
+class TestXorChecksum:
+    def test_seed_value(self):
+        assert xor_checksum(b'') == 0xFF
+
+
+# ── Stream framing: TCP reassembly (the bug class the old code missed) ───────
+
+def _sample_blocks():
+    return [
+        build_block(COMMAND_BYTES['ACCOUNT_ID'], b'023499'),
+        build_block(COMMAND_BYTES['NEW_EVENT'], b'ti23:42/id023/pi013/CG'),
+        build_block(COMMAND_BYTES['ASCII'], b' PART SET USER'),
+        build_block(COMMAND_BYTES['END_OF_DATA']),
+    ]
+
+
+class TestExtractBlocks:
+    def test_coalesced_in_one_read(self):
+        """Several blocks arriving in a single TCP read must all be extracted."""
+        buf = bytearray(b''.join(_sample_blocks()))
+        blocks, ok = extract_blocks(buf)
+        assert ok
+        assert len(blocks) == 4
+        assert buf == b''
+
+    def test_split_across_reads(self):
+        """A block split across two reads must wait for the second part."""
+        whole = _sample_blocks()[1]
+        buf = bytearray(whole[:5])
+        blocks, ok = extract_blocks(buf)
+        assert ok and blocks == []  # partial: nothing yet
+        buf.extend(whole[5:])
+        blocks, ok = extract_blocks(buf)
+        assert ok and len(blocks) == 1
+        assert blocks[0] == whole
+
+    def test_empty_buffer_returns_nothing(self):
+        buf = bytearray()
+        blocks, ok = extract_blocks(buf)
+        assert ok and blocks == []
+
+    def test_garbage_detected(self):
+        buf = bytearray(b'\x00\x01\x02')  # length byte < 0x40
+        blocks, ok = extract_blocks(buf)
+        assert not ok and blocks == []
+
+    def test_garbage_after_valid_block(self):
+        buf = bytearray(_sample_blocks()[0] + b'\x05garbage')
+        blocks, ok = extract_blocks(buf)
+        assert len(blocks) == 1
+        assert not ok
+
+    def test_multiple_full_blocks_plus_trailing_partial(self):
+        whole = _sample_blocks()
+        buf = bytearray(whole[0] + whole[1] + whole[2][:3])
+        blocks, ok = extract_blocks(buf)
+        assert ok
+        assert len(blocks) == 2
+        assert bytes(buf) == whole[2][:3]  # partial block left for next read
 
 
 # ── COMMANDS / COMMAND_BYTES consistency ─────────────────────────────────────
@@ -143,13 +188,13 @@ class TestCommandsDict:
             assert COMMAND_BYTES[name] == byte
 
     def test_new_event_is_alarm(self):
-        assert COMMANDS[0x4E] == "NEW_EVENT"
+        assert COMMANDS[0x4E] == 'NEW_EVENT'
 
     def test_old_event_is_non_alarm(self):
-        assert COMMANDS[0x4F] == "OLD_EVENT"
+        assert COMMANDS[0x4F] == 'OLD_EVENT'
 
     def test_acknowledge_byte(self):
-        assert COMMAND_BYTES["ACKNOWLEDGE"] == 0x38
+        assert COMMAND_BYTES['ACKNOWLEDGE'] == 0x38
 
     def test_reject_byte(self):
-        assert COMMAND_BYTES["REJECT"] == 0x39
+        assert COMMAND_BYTES['REJECT'] == 0x39

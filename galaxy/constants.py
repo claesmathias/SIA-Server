@@ -60,12 +60,14 @@ EVENT_CODE_DESCRIPTIONS = {
 
     # B - Burglary
     'BA': "Burglary Alarm",
+    'BB': "Burglary Bypass",
     'BC': "Burglary Cancelled",
     'BF': "Intruder High",
     'BJ': "Burglary Trouble Restored",
     'BL': "Intruder Low",
     'BR': "Burglary Alarm Restored",
     'BT': "Burglary Trouble",
+    'BU': "Burglary Unbypass",
     'BV': "Burglary Verified",
     'BX': "Burglary Test",
 
@@ -149,6 +151,9 @@ EVENT_CODE_DESCRIPTIONS = {
     'MT': "Medical Trouble",
     'MU': "Medical Unbypass",
 
+    # N - No Activity
+    'NA': "No Activity",
+
     # O - Opening
     'OA': "Opening Report (Automatic)",
     'OG': "Area Opened",
@@ -195,6 +200,15 @@ EVENT_CODE_DESCRIPTIONS = {
     'TE': "Test End",
     'TR': "Tamper Restore",
     'TS': "Test Start",
+    'TX': "Test Report",
+
+    # U - Untyped Zone
+    'UA': "Untyped Zone Alarm",
+    'UB': "Untyped Zone Bypass",
+    'UJ': "Untyped Zone Trouble Restored",
+    'UR': "Untyped Zone Alarm Restored",
+    'UT': "Untyped Zone Trouble",
+    'UU': "Untyped Zone Unbypass",
 
     # V
     'VY': "Print OC OL", # Note: Unclear code from Installer manual.
@@ -219,6 +233,7 @@ EVENT_CODE_DESCRIPTIONS = {
     'YK': "Comm Restoral",
     'YL': "+AC+ Battery Fail",
     'YP': "PSU Fail",
+    'YM': "System Battery Missing",
     'YR': "System Battery Restored",
     'YT': "System Battery Trouble",
 

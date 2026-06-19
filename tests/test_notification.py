@@ -5,8 +5,11 @@ from notification import (
     MessageEvent,
     format_notification_text,
     get_event_priority,
+    mask_url_credentials,
+    NotificationDispatcher,
     _map_priority_to_notify_type,
 )
+from queue import Queue
 import apprise
 
 
@@ -68,6 +71,17 @@ class TestFormatNotificationTextGalaxyEvent:
         e = self._make_event(time="11:45", action_text="+CLOSE Zone 42", zone="42")
         result = format_notification_text(e)
         assert result.count("42") == 1
+
+    def test_zone_substring_false_positive_fixed(self):
+        """Zone '101' must still be appended when text only contains '1010'."""
+        e = self._make_event(time="23:42", action_text="ZONE 1010 OPEN", zone="101")
+        result = format_notification_text(e)
+        assert "(Zone 101)" in result
+
+    def test_zone_exact_digit_match_not_duplicated(self):
+        e = self._make_event(time="23:42", action_text="ZONE 101 OPEN", zone="101")
+        result = format_notification_text(e)
+        assert "(Zone" not in result
 
     def test_sia_level2_fallback_includes_event_code(self):
         e = self._make_event(
@@ -148,3 +162,26 @@ class TestMessageEvent:
     def test_event_code_is_none(self):
         msg = MessageEvent("023499", "Home", "test", priority=3)
         assert msg.event_code is None
+
+
+# ── mask_url_credentials ───────────────────────────────────────────────────────
+
+class TestMaskUrlCredentials:
+    def test_masks_token(self):
+        assert mask_url_credentials("pover://abc123@user1") == "pover://***@user1"
+
+    def test_masks_userpass(self):
+        assert mask_url_credentials("mailto://user:secret@host") == "mailto://***@host"
+
+    def test_url_without_credentials_unchanged(self):
+        assert mask_url_credentials("ntfys://topic-only") == "ntfys://topic-only"
+
+
+# ── NotificationDispatcher retry backoff ──────────────────────────────────────
+
+class TestRetryBackoff:
+    def test_delay_doubles_and_caps(self):
+        d = NotificationDispatcher(Queue(), {}, {}, 3, max_retries=5, max_retry_time=8)
+        delays = [d.get_retry_delay(n) for n in range(1, 7)]
+        # minutes: 1, 2, 4, 8, 8, 8 -> seconds
+        assert delays == [60, 120, 240, 480, 480, 480]

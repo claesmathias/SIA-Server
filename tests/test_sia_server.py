@@ -87,6 +87,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from galaxy.constants import COMMAND_BYTES, COMMANDS
+from galaxy.protocol import build_block, validate_and_strip
 
 
 DEFAULT_HOST    = '127.0.0.1'
@@ -108,24 +109,14 @@ def build_sia_block(command: str | int, payload: bytes = b'') -> bytes:
     else:
         command_byte = command
 
-    length_byte = 0x40 + len(payload)
-    message = bytes([length_byte, command_byte]) + payload
-    checksum = 0xFF
-    for byte in message:
-        checksum ^= byte
-    return message + bytes([checksum])
+    return build_block(command_byte, payload)
 
 
 def parse_response(data: bytes) -> str:
     """Return the command name from a server response frame, or a hex fallback."""
-    if len(data) < 3:
-        return f'(short: {data.hex()})'
-    checksum = 0xFF
-    for b in data[:-1]:
-        checksum ^= b
-    if checksum != data[-1]:
-        return f'(bad checksum: {data.hex()})'
-    cmd_byte = data[1]
+    cmd_byte, _ = validate_and_strip(data)
+    if cmd_byte is None:
+        return f'(invalid frame: {data.hex()})'
     return COMMANDS.get(cmd_byte, f'UNKNOWN(0x{cmd_byte:02x})')
 
 

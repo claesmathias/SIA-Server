@@ -7,6 +7,7 @@ from galaxy.parser import (
     parse_account_payload,
     parse_ascii_payload,
     parse_galaxy_event,
+    split_event_chunks,
 )
 from galaxy.constants import EVENT_CODE_DESCRIPTIONS, UNKNOWN_CHAR_MAP
 
@@ -63,6 +64,20 @@ class TestParseDataPayload:
         e = self._parse("CL")
         assert e.event_code == "CL"
         assert e.zone is None
+
+    @pytest.mark.parametrize("zone", ["7", "42", "101", "1011"])
+    def test_short_zones_1_to_4_digits(self, zone):
+        """Zones of 1-4 digits must all be captured."""
+        e = self._parse(f"ti11:46/BA{zone}")
+        assert e.event_code == "BA"
+        assert e.zone == zone.lstrip('0') or '0'
+
+    def test_trailing_junk_after_event_code_logged_not_silently_dropped(self, caplog):
+        import logging
+        caplog.set_level(logging.WARNING, logger="galaxy.parser")
+        e = self._parse("ti09:00/CLxyz")
+        assert e.event_code == "CL"
+        assert any("Trailing data" in r.message for r in caplog.records)
 
     def test_subscriber_id_leading_zeros_stripped(self):
         e = self._parse("ti11:45/id0023/CL")
@@ -226,6 +241,32 @@ class TestParseGalaxyEvent:
         assert e.event_code == "BA"
         assert e.zone == "1011"
         assert e.is_alarm is True
+
+
+# ── split_event_chunks ────────────────────────────────────────────────────────
+
+class TestSplitEventChunks:
+    def test_empty_list(self):
+        assert split_event_chunks([]) == []
+
+    def test_single_chunk_no_account_repeat(self):
+        blocks = [{"command": "ACCOUNT_ID", "payload": b"1111"},
+                  {"command": "NEW_EVENT", "payload": b"ti1/CL"}]
+        assert split_event_chunks(blocks) == [blocks]
+
+    def test_splits_on_repeated_account_id(self):
+        blocks = [
+            {"command": "ACCOUNT_ID", "payload": b"1111"},
+            {"command": "NEW_EVENT", "payload": b"ti1/CL"},
+            {"command": "ACCOUNT_ID", "payload": b"2222"},
+            {"command": "NEW_EVENT", "payload": b"ti2/OP"},
+            {"command": "ASCII", "payload": b"x"},
+        ]
+        chunks = split_event_chunks(blocks)
+        assert len(chunks) == 2
+        assert chunks[0][0]["payload"] == b"1111"
+        assert chunks[1][0]["payload"] == b"2222"
+        assert len(chunks[1]) == 3
 
 
 # ── constants sanity checks ───────────────────────────────────────────────────

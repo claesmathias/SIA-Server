@@ -134,49 +134,18 @@ except ImportError:
     log.info("Encryption modules failed to import. Encrypted sessions will be rejected.")
 # ---
 
-from galaxy.parser import parse_galaxy_event
+from galaxy.parser import parse_galaxy_event, split_event_chunks
+from galaxy.protocol import validate_and_strip, build_block, extract_blocks
 from notification import NotificationDispatcher, enqueue_notification
 from galaxy.constants import COMMANDS, COMMAND_BYTES, EVENT_CODE_DESCRIPTIONS
 
 # --- END INITIALIZATION ---
 
 
-def validate_and_strip(data: bytes) -> tuple[int, bytes] | tuple[None, None]:
-    """Validates a raw message block and returns the command byte and payload."""
-    if len(data) < 3:
-        log.debug("Invalid block: too short.")
-        return None, None
-    declared_payload_length = data[0] - 0x40
-    actual_payload_length = len(data) - 3
-    if declared_payload_length != actual_payload_length:
-        log.debug("Block length mismatch! Declared: %d, Actual: %d.",
-                    declared_payload_length, actual_payload_length)
-        return None, None
-    expected_checksum = data[-1]
-    message_to_check = data[:-1]
-    checksum = 0xFF
-    for byte in message_to_check:
-        checksum ^= byte
-    if checksum != expected_checksum:
-        log.debug("Checksum mismatch! Calculated: 0x%02x, Expected: 0x%02x.",
-                    checksum, expected_checksum)
-        return None, None
-    command_byte = data[1]
-    payload = data[2:-1]
-    return command_byte, payload
-
-
 async def build_and_send(writer, command: str, payload: bytes = b'', crypto: CryptoContext | None = None):
     """Builds and sends a valid Galaxy message block."""
-    command_byte = COMMAND_BYTES[command]
-    payload_length = len(payload)
-    length_byte = payload_length + 0x40
-    message_part = bytes([length_byte, command_byte]) + payload
-    checksum = 0xFF
-    for byte in message_part:
-        checksum ^= byte
-    final_message = message_part + bytes([checksum])
-    
+    final_message = build_block(COMMAND_BYTES[command], payload)
+
     if crypto:
         log.debug("Encrypting outgoing command: %s", command)
         final_message = crypto.encrypt(final_message)
@@ -204,9 +173,11 @@ async def handle_connection(notification_queue: Queue, reader, writer):
     crypto = None  # This will hold our CryptoContext object if the session is encrypted
     account_validated = False
     valid_blocks = []
-    
+    buffer = bytearray()  # Reassembly buffer: TCP reads are not message-aligned
+    end_of_data = False
+
     try:
-        while True:
+        while not end_of_data:
             data = await reader.read(1024)
             if not data:
                 log.debug("Connection closed by peer")
@@ -217,8 +188,8 @@ async def handle_connection(notification_queue: Queue, reader, writer):
                     log.debug("Encrypted header detected from %r", addr)
                     crypto = await do_handshake(reader, writer, data, log)
                     if crypto is None:
-                        if config.REJECT_POLICY == 'respond':
-                            log.warning("Handshake failed, closing connection")
+                        log.warning("Encryption handshake failed from %r, closing connection", addr)
+                        await policy_reject(writer, crypto=None)
                         return
                     log.info("Encrypted session established from %r", addr)
                     # Handshake successful, now wait for the first real SIA message.
@@ -234,83 +205,85 @@ async def handle_connection(notification_queue: Queue, reader, writer):
                     log.error("Required modules for encryption are missing.")
                     log.error("Closing connection to stop panel retries.")
                     log.error("="*60)
-                    return            
-          
+                    return
+
             if crypto:
                 data = crypto.decrypt(data)
 
-            command_byte, payload = validate_and_strip(data)
-            
-            if command_byte is None:
-                if len(data) > 0:
-                    if config.REJECT_POLICY == 'respond': #only print warning if we respond
-                        log.warning("Invalid frame from %r - rejected.", addr)
-                    log.debug("Raw: %r", data)
-                else:
-                    if config.REJECT_POLICY == 'respond': #only print warning if we respond
-                        log.warning("Invalid frame, received empty data block, from %r - rejected.", addr)
-                await policy_reject(writer, crypto=crypto)
-                continue
-            
-            command_name = COMMANDS.get(command_byte, f'UNKNOWN(0x{command_byte:02x})')
-            log.debug("Received Command: %s, Payload: %r", command_name, payload)
+            # A single read may contain several blocks, or only part of one.
+            # Accumulate bytes and process every complete block in order.
+            buffer.extend(data)
+            blocks, in_sync = extract_blocks(buffer)
 
-            if not account_validated and command_name != 'ACCOUNT_ID':
-                log.warning("Protocol violation from %r: expected ACCOUNT_ID, got '%s'. Rejecting.",
-                            addr, command_name)
+            for block in blocks:
+                command_byte, payload = validate_and_strip(block)
+
+                if command_byte is None:
+                    if config.REJECT_POLICY == 'respond':  # only print warning if we respond
+                        log.warning("Invalid frame from %r - rejected.", addr)
+                    log.debug("Raw: %r", block)
+                    await policy_reject(writer, crypto=crypto)
+                    continue
+
+                command_name = COMMANDS.get(command_byte, f'UNKNOWN(0x{command_byte:02x})')
+                log.debug("Received Command: %s, Payload: %r", command_name, payload)
+
+                if not account_validated and command_name != 'ACCOUNT_ID':
+                    log.warning("Protocol violation from %r: expected ACCOUNT_ID, got '%s'. Rejecting.",
+                                addr, command_name)
+                    await policy_reject(writer, crypto=crypto)
+                    return
+
+                # --- ACCOUNT POLICY ENFORCEMENT ---
+                # Validate account_id if according to policy
+                if command_name == 'ACCOUNT_ID':
+                    account_number = payload.decode(errors='ignore')
+
+                    # Look up the policy. Fall back to 'default', then to 'yes'.
+                    policy = config.ACCOUNT_POLICIES.get(
+                        account_number,
+                        config.ACCOUNT_POLICIES.get('default', 'yes')
+                    )
+
+                    is_encrypted = crypto is not None
+                    log.debug("Account '%s' has policy '%s'. Session is encrypted: %s",
+                              account_number, policy, is_encrypted)
+                    # Policy: 'no' - This account is completely disabled.
+                    if policy == 'no':
+                        log.warning("POLICY: Account '%s' is DISABLED. Rejecting connection.", account_number)
+                        await policy_reject(writer, crypto=crypto)
+                        return
+                    # Policy: 'secure' - This account requires an encrypted session.
+                    if policy == 'secure' and not is_encrypted:
+                        log.warning("POLICY: Account '%s' requires ENCRYPTED connection but received PLAINTEXT. Rejecting.", account_number)
+                        await policy_reject(writer, crypto=crypto)
+                        return
+                    # If we reach here, the policy is satisfied.
+                    account_validated = True
+                    log.debug("POLICY: Account '%s' policy satisfied.", account_number)
+
+                if command_name != 'END_OF_DATA':
+                    valid_blocks.append({'command': command_name, 'payload': payload})
+                await build_and_send(writer, 'ACKNOWLEDGE', crypto=crypto)
+
+                if command_name == 'END_OF_DATA':
+                    log.debug("End of data received, processing sequence.")
+                    end_of_data = True
+                    break
+
+            if not in_sync:
+                # The stream contains an implausible length byte - we have
+                # lost framing and cannot recover. Reject and close.
+                log.warning("Unrecoverable framing error from %r - closing.", addr)
+                log.debug("Buffer: %r", bytes(buffer))
                 await policy_reject(writer, crypto=crypto)
                 return
 
-            # --- ACCOUNT POLICY ENFORCEMENT ---
-            # Validate account_id if according to policy
-            if command_name == 'ACCOUNT_ID':
-                account_number = payload.decode(errors='ignore')
-                
-                # Look up the policy. Fall back to 'default', then to 'yes'.
-                policy = config.ACCOUNT_POLICIES.get(
-                    account_number,
-                    config.ACCOUNT_POLICIES.get('default', 'yes')
-                )
-                
-                is_encrypted = crypto is not None
-                log.debug("Account '%s' has policy '%s'. Session is encrypted: %s",
-                          account_number, policy, is_encrypted)
-                # Policy: 'no' - This account is completely disabled.
-                if policy == 'no':
-                    log.warning("POLICY: Account '%s' is DISABLED. Rejecting connection.", account_number)
-                    await policy_reject(writer, crypto=crypto)
-                    return
-                # Policy: 'secure' - This account requires an encrypted session.
-                if policy == 'secure' and not is_encrypted:
-                    log.warning("POLICY: Account '%s' requires ENCRYPTED connection but received PLAINTEXT. Rejecting.", account_number)
-                    await policy_reject(writer, crypto=crypto)
-                    return
-                # If we reach here, the policy is satisfied.
-                account_validated = True
-                log.debug("POLICY: Account '%s' policy satisfied.", account_number)
-            
-            if command_name != 'END_OF_DATA':
-                valid_blocks.append({'command': command_name, 'payload': payload})
-            await build_and_send(writer, 'ACKNOWLEDGE', crypto=crypto)
-            
-            if command_name == 'END_OF_DATA':
-                log.debug("End of data received, processing sequence.")
-                break
-        
         if not valid_blocks:
             return
-            
-        event_chunks = []
-        current_chunk = []
-        for block in valid_blocks:
-            if block['command'] == 'ACCOUNT_ID' and current_chunk:
-                event_chunks.append(current_chunk)
-                current_chunk = [block]
-            else:
-                current_chunk.append(block)
-        if current_chunk:
-            event_chunks.append(current_chunk)
-        
+
+        event_chunks = split_event_chunks(valid_blocks)
+
         log.info("Found %d event(s) in connection from %s", len(event_chunks), addr[0])
         for i, chunk in enumerate(event_chunks, 1):
             log.debug("--- Processing Event %d of %d ---", i, len(event_chunks))
@@ -365,7 +338,7 @@ async def monitor_subprocess(process, name):
         while not stream.at_eof():
             line = await stream.readline()
             if line:
-                line_str = line.decode().strip()
+                line_str = line.decode(errors='replace').strip()
                 parts = line_str.split(':', 1)
                 if len(parts) == 2 and parts[0] in LEVEL_MAP:
                     level_name, msg = parts[0], parts[1].strip()
@@ -421,10 +394,24 @@ async def start_servers(notification_queue: Queue):
             log.error("Failed to launch IP Check server subprocess: %s", e)
     
     log.info('='*60)
-    
+
+    # Prefer loop-level signal handlers so the finally-block below (which
+    # terminates the IP Check subprocess) always runs on SIGINT/SIGTERM.
+    loop = asyncio.get_running_loop()
+    serve_task = asyncio.ensure_future(sia_server.serve_forever())
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(
+                sig, lambda s=sig: (log.info("Received signal %s, shutting down...", s),
+                                    serve_task.cancel()))
+        except (NotImplementedError, RuntimeError):
+            pass  # Windows: fall back to the signal.signal() handlers in main()
+
     # Run the main SIA server forever
     try:
-        await sia_server.serve_forever()
+        await serve_task
+    except asyncio.CancelledError:
+        log.info("Server shutdown requested.")
     finally:
         # When the main server is shut down, also terminate the subprocess
         if ip_check_process and ip_check_process.returncode is None:
@@ -434,6 +421,7 @@ async def start_servers(notification_queue: Queue):
             log.info("IP Check subprocess terminated.")
 
 def handle_shutdown(signum, frame):
+    # Fallback handler (Windows / loops without add_signal_handler support).
     log.info("Received shutdown signal (%d), stopping server...", signum)
     sys.exit(0)
 

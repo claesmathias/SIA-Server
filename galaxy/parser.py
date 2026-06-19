@@ -147,8 +147,10 @@ def parse_data_payload(payload: bytes, event: GalaxyEvent, event_code_descriptio
             else:
                 log.warning("Unknown data section modifier '%s' in payload: %r", section, payload)
         elif section[:2].isupper():
-            # Event code section: 2 uppercase letters + optional 3-4 digit zone
-            ec_match = re.match(r'([A-Z]{2})(\d{3,4})?', section)
+            # Event code section: 2 uppercase letters + optional 1-4 digit zone.
+            # The trailing group captures anything left over so we can warn
+            # about it instead of silently ignoring malformed data.
+            ec_match = re.match(r'([A-Z]{2})(\d{1,4})?(.*)$', section)
             if ec_match:
                 event.event_code = ec_match.group(1)
                 log.debug("Parsed event_code: '%s'", event.event_code)
@@ -157,6 +159,9 @@ def parse_data_payload(payload: bytes, event: GalaxyEvent, event_code_descriptio
                 if ec_match.group(2):
                     event.zone = ec_match.group(2).lstrip('0') or '0'
                     log.debug("Parsed zone: '%s'", event.zone)
+                if ec_match.group(3):
+                    log.warning("Trailing data after event code in section '%s': '%s'",
+                                section, ec_match.group(3))
             else:
                 log.warning("Could not parse event code from section: %s", section)
         else:
@@ -206,6 +211,27 @@ def parse_galaxy_event(blocks: List[Dict], account_sites: Dict,
 
         else:
             log.warning("Unknown command '%s' passed to parser. Payload: %r", command, payload)
-            
+
     return event
+
+
+def split_event_chunks(blocks: List[Dict]) -> List[List[Dict]]:
+    """
+    Splits a flat list of validated blocks into per-event chunks.
+
+    Galaxy panels can send several events in one connection; each new
+    event starts with another ACCOUNT_ID block. Extracted from the
+    connection handler so it can be unit tested.
+    """
+    chunks: List[List[Dict]] = []
+    current: List[Dict] = []
+    for block in blocks:
+        if block['command'] == 'ACCOUNT_ID' and current:
+            chunks.append(current)
+            current = [block]
+        else:
+            current.append(block)
+    if current:
+        chunks.append(current)
+    return chunks
 
