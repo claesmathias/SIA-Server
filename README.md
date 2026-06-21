@@ -52,8 +52,9 @@ docker compose ps
 The `sia-server` image includes a `HEALTHCHECK` that verifies the SIA event
 port (default 10000) is accepting TCP connections; `docker compose ps` and
 `docker inspect` will report `healthy`/`unhealthy` accordingly. If you
-changed `LISTEN_PORT` in `sia-server.conf`, set `HEALTHCHECK_PORT` to match
-in the `environment:` section for the `sia-server` service.
+changed `LISTEN_PORT` in `sia-server.conf`, uncomment and set
+`HEALTHCHECK_PORT` in the `environment:` section for the `sia-server`
+service in `docker-compose.yml` to match.
 
 ### View logs
 

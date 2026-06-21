@@ -33,6 +33,10 @@ services:
     environment:
       # Set timezone for log timestamps
       - TZ=Europe/Brussels
+      # The image's built-in HEALTHCHECK connects to this port to verify
+      # the SIA event server is accepting connections. Only needed if you
+      # changed LISTEN_PORT in sia-server.conf away from the default 10000.
+      # - HEALTHCHECK_PORT=10000
     ports:
       # SIA Event Server (receives panel events)
       - "10000:10000"

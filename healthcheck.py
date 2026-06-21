@@ -20,16 +20,17 @@ import socket
 import sys
 
 HOST = "127.0.0.1"
-PORT = int(os.environ.get("HEALTHCHECK_PORT", "10000"))
+DEFAULT_PORT = 10000
 TIMEOUT = 3.0
 
 
 def main() -> int:
+    port = int(os.environ.get("HEALTHCHECK_PORT", str(DEFAULT_PORT)))
     try:
-        with socket.create_connection((HOST, PORT), timeout=TIMEOUT):
+        with socket.create_connection((HOST, port), timeout=TIMEOUT):
             return 0
     except OSError as e:
-        print(f"Healthcheck failed: cannot connect to {HOST}:{PORT}: {e}", file=sys.stderr)
+        print(f"Healthcheck failed: cannot connect to {HOST}:{port}: {e}", file=sys.stderr)
         return 1
 
 
