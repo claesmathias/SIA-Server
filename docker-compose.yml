@@ -48,6 +48,15 @@ services:
     networks:
       - sia-network
     restart: unless-stopped
+    # Verifies the SIA event port accepts TCP connections (the image
+    # already defines this HEALTHCHECK; declaring it here makes it
+    # visible/tunable from compose). Adjust if you changed LISTEN_PORT.
+    healthcheck:
+      test: ["CMD", "python3", "healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
   # --- REQUIRED: Apprise Notification Engine ---
   apprise:
